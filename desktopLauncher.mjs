@@ -66,7 +66,11 @@ async function main() {
 
   const electronPath = findElectronBinary();
   console.log('[launcher] Using electron at:', electronPath);
-  const electron = spawn(electronPath, ['electron/main.mjs'], {
+  const electronArgs = ['electron/main.mjs'];
+  if (process.platform === 'linux') {
+    electronArgs.push('--no-sandbox');
+  }
+  const electron = spawn(electronPath, electronArgs, {
     stdio: 'inherit',
     env: { ...process.env, PORT, ELECTRON_BACKEND_URL: `http://127.0.0.1:${PORT}` },
     cwd: ROOT,
