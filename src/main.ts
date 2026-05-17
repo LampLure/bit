@@ -10,6 +10,7 @@ declare global {
     __adaptersStore?: Record<string, Adapter>;
     __onPanelTitle?: (panelId: number, title: string) => void;
     __onPanelUrl?: (panelId: number, url: string) => void;
+    __onPanelStatus?: (panelId: number, status: string) => void;
   }
 }
 
@@ -118,6 +119,17 @@ function updateSearchButtonState(): void {
   button.disabled = state.running || !state.query.trim() || state.adapters.length === 0;
 }
 
+function updatePanelChrome(panelId: number): void {
+  const panel = document.querySelector<HTMLElement>(`.desktop-panel[data-panel-id="${panelId}"]`);
+  if (!panel) return;
+
+  const urlEl = panel.querySelector<HTMLElement>('.panel-url');
+  if (urlEl) urlEl.textContent = state.panelUrls[panelId] ?? '';
+
+  const statusEl = panel.querySelector<HTMLElement>('.panel-status');
+  if (statusEl) statusEl.textContent = state.panelStatuses[panelId] ?? '';
+}
+
 function upsertProgress(item: ProgressItem): void {
   state.progress[item.id] = item;
   render();
@@ -151,6 +163,8 @@ function renderAdapterForm(): string {
 }
 
 function renderSidebar(): string {
+  const isGuideActive = state.guideStep !== 'idle' && state.guideStep !== 'done';
+
   return `
     <aside class="sidebar">
       <div class="brand">
@@ -158,11 +172,12 @@ function renderSidebar(): string {
         <div><h1>Bit Resource Finder</h1><p>本地 metadata + 规则 + LLaMACpp 评分</p></div>
       </div>
       <label class="field"><span>搜索关键字</span><input id="query" value="${escapeHtml(state.query)}" placeholder="例如：开源纪录片 1080p" /></label>
-      <label class="field"><span>并发数：${state.panelCount}</span><input id="concurrency" type="range" min="1" max="4" value="${state.panelCount}" /></label>
-      <button class="primary" id="search" ${state.running || !state.query.trim() || state.adapters.length === 0 ? 'disabled' : ''}>${state.running ? '搜索中…' : '▶ 开始搜索'}</button>
+      <label class="field"><span>并发数：${state.panelCount}</span><input id="concurrency" type="range" min="1" max="4" value="${state.panelCount}" ${isGuideActive ? 'disabled' : ''} /></label>
+      ${isGuideActive ? '<p class="muted recording-note">录制资源站时右侧固定只显示 1 个浏览器面板；搜索时才按并发数打开多个面板。</p>' : ''}
+      <button class="primary" id="search" ${state.running || !state.query.trim() || state.adapters.length === 0 || isGuideActive ? 'disabled' : ''}>${state.running ? '搜索中…' : '▶ 开始搜索'}</button>
       <button class="secondary" id="add-adapter">＋ 添加资源站</button>
       ${renderAdapterForm()}
-      ${state.guideStep !== 'idle' && state.guideStep !== 'done' ? `<button class="secondary" id="cancel-adapter">取消录制</button>` : ''}
+      ${isGuideActive ? `<button class="secondary" id="cancel-adapter">取消录制</button>` : ''}
       <section class="panel"><h2>资源站 adapters</h2>${state.adapters.length === 0 ? '<p class="muted">暂无资源站。</p>' : ''}${state.adapters.map((adapter) => `<div class="adapter-chip"><strong>${escapeHtml(adapter.name)}</strong><span>${escapeHtml(adapter.homeUrl)}</span></div>`).join('')}</section>
       <section class="panel"><h2>最近 5 次搜索</h2>${state.searchHistory.length === 0 ? '<p class="muted">暂无历史。</p>' : ''}${state.searchHistory.map((entry) => `<button class="history-item" data-history="${entry.id}"><strong>${escapeHtml(entry.keyword)}</strong><span>${new Date(entry.createdAt).toLocaleString()} · ${entry.results.length} 条</span></button>`).join('')}</section>
       <section class="panel compact"><h2>AI 设置</h2><label class="field small"><span>LLaMACpp endpoint</span><input id="ai-endpoint" value="${escapeHtml(state.settings.aiEndpoint)}" /></label><label class="field small"><span>展示阈值：${state.settings.confidenceThreshold}</span><input id="threshold" type="range" min="10" max="100" step="5" value="${state.settings.confidenceThreshold}" /></label></section>
@@ -170,32 +185,37 @@ function renderSidebar(): string {
 }
 
 function renderMainContent(): string {
-  const panels = Array.from({ length: state.panelCount }, (_, index) => ({
+  const isGuideActive = state.guideStep !== 'idle' && state.guideStep !== 'done';
+  const visiblePanelCount = isGuideActive ? 1 : state.panelCount;
+  const panels = Array.from({ length: visiblePanelCount }, (_, index) => ({
     index,
     adapter: index === 0 && state.draftAdapter ? state.draftAdapter : state.adapters[index],
     progress: Object.values(state.progress).find((p) => p.id === `panel-${index}`),
   }));
-
-  const isGuideActive = state.guideStep !== 'idle' && state.guideStep !== 'done';
 
   return `
     <main>
       <div class="panel-area">
         <div class="panel-header">
           <h2>浏览器面板</h2>
-          ${isGuideActive ? `<div class="guide-toast"><strong>录制指引</strong><span>${guideMessages[state.guideStep]}</span><button id="manual-selector">手动填写</button></div>` : ''}
+          ${isGuideActive ? `<div class="guide-toast"><strong>录制指引</strong><span>${guideMessages[state.guideStep]}：右侧网页加载出来后，直接在网页里面点击对应元素。</span><button id="manual-selector">手动填写</button></div>` : ''}
         </div>
-        <div class="desktop-panel-grid panes-${state.panelCount}" id="panel-grid">
+        <div class="desktop-panel-grid panes-${visiblePanelCount}" id="panel-grid">
           ${panels.map((panel) => {
             const prog = panel.progress;
             const isCF = prog?.status === 'waiting' && prog?.message?.includes('验证');
+            const status = state.panelStatuses[panel.index] ?? (isGuideActive && panel.index === 0 ? '准备打开资源站首页...' : '');
             return `<div class="desktop-panel" data-panel-id="${panel.index}">
               <div class="desktop-panel-bar">
-                <span class="status-dot ${prog?.status === 'running' ? 'running' : prog?.status === 'done' ? 'done' : prog?.status === 'error' ? 'error' : prog?.status === 'waiting' ? 'waiting' : 'idle'}"></span>
+                <span class="status-dot ${prog?.status === 'running' ? 'running' : prog?.status === 'done' ? 'done' : prog?.status === 'error' ? 'error' : prog?.status === 'waiting' ? 'waiting' : isGuideActive ? 'running' : 'idle'}"></span>
                 <strong>${escapeHtml(panel.adapter?.name ?? `面板 ${panel.index + 1}`)}</strong>
                 <span class="panel-url">${escapeHtml(state.panelUrls[panel.index] ?? '')}</span>
               </div>
               <div class="panel-viewport" data-panel-id="${panel.index}">
+                <div class="panel-placeholder">
+                  <strong>${isGuideActive ? '正在准备内嵌浏览器' : '浏览器面板空闲'}</strong>
+                  <span class="panel-status">${escapeHtml(status)}</span>
+                </div>
                 ${isCF ? `<div class="verification-overlay">
                   <p>检测到验证页面</p>
                   <button class="continue-btn" data-panel="${panel.index}">我已完成验证，继续</button>
@@ -305,6 +325,7 @@ function captureSelectorFromElectron(selector: string): void {
     state.previewUrl = undefined;
     persist();
   } else {
+    state.panelStatuses[0] = guideMessages[state.guideStep];
     showToast(toastMsg);
     startElectronCapture(state.guideStep);
   }
@@ -313,20 +334,31 @@ function captureSelectorFromElectron(selector: string): void {
 
 async function startElectronCapture(step: AdapterCaptureStep) {
   const api = getElectronPanelAPI();
-  if (!api || !state.draftAdapter) return;
+  if (!api || !state.draftAdapter) {
+    state.panelStatuses[0] = 'Electron 内嵌浏览器 API 不可用，请确认是通过 npm run app 启动。';
+    render();
+    return;
+  }
+
+  state.panelStatuses[0] = `正在打开 ${state.draftAdapter.homeUrl}`;
+  render();
 
   await api.createPanel(0);
   requestPanelResize();
-
   await api.navigatePanel(0, state.draftAdapter.homeUrl);
-  await new Promise((r) => setTimeout(r, 1500));
-  await api.startSelectorCapture(0);
 
+  state.panelStatuses[0] = '网页加载中...加载完成后请在右侧网页里点击搜索框';
+  updatePanelChrome(0);
+
+  await api.startSelectorCapture(0);
   const selector = await api.waitForSelector(0, 120000);
   await api.stopSelectorCapture(0);
 
   if (selector) {
     captureSelectorFromElectron(selector);
+  } else {
+    state.panelStatuses[0] = '录制超时。请点击“手动填写”，或取消后重新录制。';
+    updatePanelChrome(0);
   }
 }
 
@@ -352,15 +384,14 @@ function createDraftAdapterFromForm(): void {
     state.draftAdapter,
     ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id),
   ];
-  state.panelCount = Math.max(1, state.panelCount);
   state.guideStep = 'pick_search_input';
   state.previewUrl = parsedHome.href;
   state.adapterFormVisible = false;
   state.adapterHomeUrl = '';
   state.adapterName = '';
+  state.panelStatuses[0] = '准备打开资源站首页...';
 
   persist();
-  showToast(guideMessages.pick_search_input);
   render();
   startElectronCapture('pick_search_input');
 }
@@ -370,6 +401,11 @@ function createDraftAdapterFromForm(): void {
 };
 (window as any).__onPanelUrl = (panelId: number, url: string) => {
   state.panelUrls[panelId] = url;
+  updatePanelChrome(panelId);
+};
+(window as any).__onPanelStatus = (panelId: number, status: string) => {
+  state.panelStatuses[panelId] = status;
+  updatePanelChrome(panelId);
 };
 
 function bindEvents(): void {
@@ -407,6 +443,7 @@ function bindEvents(): void {
     state.guideStep = 'idle';
     state.draftAdapter = undefined;
     state.previewUrl = undefined;
+    state.panelStatuses[0] = '';
 
     const api = getElectronPanelAPI();
     if (api) api.stopSelectorCapture(0);
