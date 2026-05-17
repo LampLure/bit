@@ -132,20 +132,11 @@ async function withConcurrency<T, R>(items: T[], limit: number, worker: (item: T
   return results;
 }
 
-export async function executeSearch(
-  query: string,
-  adapters: SiteAdapter[],
+export async function rankRawResults(
+  rawResults: RawMagnetResult[],
   settings: AppSettings,
-  fetchPage: PageFetcher,
   onProgress: ProgressCallback,
 ): Promise<RankedResult[]> {
-  const activeAdapters = adapters.slice(0, Math.max(1, Math.min(4, settings.concurrency)));
-  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 0, status: 'running', message: `启动 ${activeAdapters.length} 个资源站任务` });
-
-  const rawGroups = await withConcurrency(activeAdapters, settings.concurrency, (adapter, index) => runAdapterSearch(adapter, query, index, fetchPage, onProgress));
-  const rawResults = rawGroups.flat();
-  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 1, status: 'done', message: `共抓取 ${rawResults.length} 条磁力链接` });
-
   const metadataItems = await withConcurrency(rawResults, Math.min(6, Math.max(1, settings.concurrency * 2)), async (result) => {
     const id = `metadata-${result.id}`;
     onProgress({ id, label: result.title, phase: 'metadata', value: 0.2, status: 'running', message: '分析 magnet metadata（不下载文件）' });
@@ -163,4 +154,20 @@ export async function executeSearch(
   });
   onProgress({ id: 'ai-score', label: 'AI评分', phase: 'ai', value: 1, status: 'done', message: `AI 排序后展示 ${ranked.length} 条` });
   return ranked;
+}
+
+export async function executeSearch(
+  query: string,
+  adapters: SiteAdapter[],
+  settings: AppSettings,
+  fetchPage: PageFetcher,
+  onProgress: ProgressCallback,
+): Promise<RankedResult[]> {
+  const activeAdapters = adapters.slice(0, Math.max(1, Math.min(4, settings.concurrency)));
+  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 0, status: 'running', message: `启动 ${activeAdapters.length} 个资源站任务` });
+
+  const rawGroups = await withConcurrency(activeAdapters, settings.concurrency, (adapter, index) => runAdapterSearch(adapter, query, index, fetchPage, onProgress));
+  const rawResults = rawGroups.flat();
+  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 1, status: 'done', message: `共抓取 ${rawResults.length} 条磁力链接` });
+  return rankRawResults(rawResults, settings, onProgress);
 }

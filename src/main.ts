@@ -1,7 +1,7 @@
 import { applyGuideCapture, guideMessages, nextGuideStep } from './core/adapterGuide.js';
-import { executeSearch } from './core/search.js';
+import { executeSearch, rankRawResults } from './core/search.js';
 import { defaultSettings, loadAdapters, loadHistory, loadSettings, pushHistory, saveAdapters, saveSettings } from './core/storage.js';
-import type { AppSettings, FetchedPage, GuideStep, HistoryEntry, PageFetcher, ProgressItem, RankedResult, SiteAdapter } from './core/types.js';
+import type { AppSettings, FetchedPage, GuideStep, HistoryEntry, PageFetcher, ProgressItem, RankedResult, RawMagnetResult, SiteAdapter } from './core/types.js';
 
 interface State {
   query: string;
@@ -176,6 +176,35 @@ function render(): void {
 }
 
 
+
+async function tryBrowserRuntimeSearch(query: string): Promise<RankedResult[] | undefined> {
+  try {
+    const statusResponse = await fetch('/api/browser/status');
+    const status = await statusResponse.json() as { available?: boolean; error?: string };
+    if (!status.available) {
+      upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'waiting', message: status.error ?? 'Playwright 未安装，回退到 HTTP 抓取模式' });
+      return undefined;
+    }
+    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 0.15, status: 'running', message: '使用 Playwright/Chromium 持久化上下文执行真实搜索' });
+    const response = await fetch('/api/browser/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, adapters: state.adapters, concurrency: state.settings.concurrency }),
+    });
+    const payload = await response.json() as { ok?: boolean; results?: RawMagnetResult[]; error?: string; unavailable?: boolean };
+    if (!payload.ok || payload.unavailable) {
+      upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: payload.error ?? '有头浏览器搜索失败，回退到 HTTP 抓取模式' });
+      return undefined;
+    }
+    const rawResults = payload.results ?? [];
+    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'done', message: `真实浏览器抓取到 ${rawResults.length} 条磁力链接` });
+    return rankRawResults(rawResults, state.settings, upsertProgress);
+  } catch (error) {
+    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  }
+}
+
 function captureSelector(selector: string): void {
   if (!state.draftAdapter) return;
   state.draftAdapter = applyGuideCapture(state.draftAdapter, state.guideStep, selector);
@@ -231,7 +260,7 @@ function bindEvents(): void {
     if (state.running || !state.query.trim()) return;
     state.running = true; state.progress = {}; render();
     try {
-      state.results = await executeSearch(state.query.trim(), state.adapters, state.settings, pageFetcher, upsertProgress);
+      state.results = (await tryBrowserRuntimeSearch(state.query.trim())) ?? await executeSearch(state.query.trim(), state.adapters, state.settings, pageFetcher, upsertProgress);
       const entry: HistoryEntry = { id: crypto.randomUUID(), query: state.query.trim(), createdAt: nowIso(), results: state.results };
       state.history = pushHistory(entry);
     } finally {

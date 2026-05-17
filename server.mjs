@@ -3,6 +3,8 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync, createReadStream } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browserRuntimeStatus, runBrowserSearch } from './browserRuntime.mjs';
+import { fetchTorrentMetadata, torrentMetadataStatus } from './torrentMetadataService.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const distDir = resolve(__dirname, 'dist');
@@ -103,6 +105,19 @@ async function fetchRemotePage(rawUrl) {
   }
 }
 
+
+async function readJsonBody(req, limitBytes = 1024 * 1024) {
+  const chunks = [];
+  let received = 0;
+  for await (const chunk of req) {
+    received += chunk.length;
+    if (received > limitBytes) throw new Error('Request body is too large');
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
@@ -145,6 +160,28 @@ createServer(async (req, res) => {
         return;
       }
       json(res, 200, await fetchRemotePage(target));
+      return;
+    }
+    if (url.pathname === '/api/browser/status') {
+      json(res, 200, await browserRuntimeStatus());
+      return;
+    }
+    if (url.pathname === '/api/browser/search' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      json(res, 200, await runBrowserSearch(body));
+      return;
+    }
+    if (url.pathname === '/api/torrent/status') {
+      json(res, 200, await torrentMetadataStatus());
+      return;
+    }
+    if (url.pathname === '/api/torrent/metadata' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!body.magnetUri) {
+        json(res, 400, { ok: false, error: 'Missing magnetUri' });
+        return;
+      }
+      json(res, 200, await fetchTorrentMetadata(body.magnetUri, body.timeoutMs));
       return;
     }
     await serveStatic(req, res, url.pathname);

@@ -33,13 +33,42 @@ function estimateFileFromTitle(title: string, magnetUri: string): TorrentFile[] 
   return [{ path: name, bytes: sizeHint }];
 }
 
+
+async function fetchServerMetadata(magnetUri: string, timeoutMs: number): Promise<TorrentMetadata | undefined> {
+  if (typeof fetch !== 'function') return undefined;
+  try {
+    const response = await fetch('/api/torrent/metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ magnetUri, timeoutMs }),
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json() as Partial<TorrentMetadata> & { ok?: boolean; unavailable?: boolean; error?: string };
+    if (!payload.ok || payload.unavailable || !payload.files) return undefined;
+    return {
+      magnetUri,
+      infoHash: payload.infoHash,
+      displayName: payload.displayName,
+      files: payload.files,
+      totalBytes: payload.totalBytes ?? payload.files.reduce((sum, file) => sum + file.bytes, 0),
+      seeders: payload.seeders,
+      status: 'complete',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function analyzeMagnetMetadata(
   result: RawMagnetResult,
   timeoutMs: number,
 ): Promise<TorrentMetadata> {
+  const serverMetadata = await fetchServerMetadata(result.magnetUri, timeoutMs);
+  if (serverMetadata) return serverMetadata;
+
   const parsed = parseMagnetUri(result.magnetUri);
   const timeout = new Promise<TorrentMetadata>((resolve) => {
-    window.setTimeout(
+    globalThis.setTimeout(
       () =>
         resolve({
           magnetUri: result.magnetUri,
@@ -55,7 +84,7 @@ export async function analyzeMagnetMetadata(
   });
 
   const metadata = new Promise<TorrentMetadata>((resolve) => {
-    window.setTimeout(() => {
+    globalThis.setTimeout(() => {
       const files = estimateFileFromTitle(result.title, result.magnetUri);
       resolve({
         magnetUri: result.magnetUri,
