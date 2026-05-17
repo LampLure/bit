@@ -147,7 +147,7 @@ function renderSidebar(): string {
 function renderMainContent(): string {
   const panels = Array.from({ length: state.panelCount }, (_, index) => ({
     index,
-    adapter: state.adapters[index],
+    adapter: index === 0 && state.draftAdapter ? state.draftAdapter : state.adapters[index],
     progress: Object.values(state.progress).find((p) => p.id === `panel-${index}`),
   }));
 
@@ -276,7 +276,10 @@ function captureSelectorFromElectron(selector: string): void {
   state.guideStep = nextGuideStep(state.guideStep);
 
   if (state.guideStep === 'done' && state.draftAdapter) {
-    state.adapters = [state.draftAdapter, ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id)];
+    state.adapters = state.adapters.map((item) =>
+      item.id === state.draftAdapter?.id ? state.draftAdapter : item,
+    );
+
     showToast(guideToasts.done);
     state.draftAdapter = undefined;
     state.previewUrl = undefined;
@@ -333,8 +336,14 @@ function bindEvents(): void {
     }
     const name = prompt('请输入资源站名称', parsedHome.host)?.trim() || parsedHome.host;
     state.draftAdapter = newAdapter(name, parsedHome.href);
+    state.adapters = [
+      state.draftAdapter,
+      ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id),
+    ];
+    state.panelCount = Math.max(1, state.panelCount);
     state.guideStep = 'pick_search_input';
     state.previewUrl = parsedHome.href;
+    persist();
     showToast(guideMessages.pick_search_input);
     render();
 
@@ -342,11 +351,19 @@ function bindEvents(): void {
   });
 
   document.getElementById('cancel-adapter')?.addEventListener('click', () => {
+    if (state.draftAdapter) {
+      const draftId = state.draftAdapter.id;
+      state.adapters = state.adapters.filter((item) => item.id !== draftId);
+      persist();
+    }
+
     state.guideStep = 'idle';
     state.draftAdapter = undefined;
     state.previewUrl = undefined;
+
     const api = getElectronPanelAPI();
     if (api) api.stopSelectorCapture(0);
+
     render();
   });
 
