@@ -3,8 +3,17 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync, createReadStream } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { browserRuntimeStatus, runBrowserSearch } from './browserRuntime.mjs';
-import { fetchTorrentMetadata, torrentMetadataStatus } from './torrentMetadataService.mjs';
+import {
+  browserRuntimeStatus,
+  startBrowser,
+  openBrowserPanel,
+  runBrowserSearch,
+  continueAfterVerification,
+  extractDetailPage,
+  storeAdapters,
+  closeBrowserRuntime,
+} from './browserRuntime.mjs';
+import { fetchTorrentMetadata, fetchManyTorrentMetadata, torrentMetadataStatus } from './torrentMetadataService.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const distDir = resolve(__dirname, 'dist');
@@ -14,7 +23,6 @@ const port = Number(process.env.PORT ?? 4173);
 const maxHtmlBytes = 4 * 1024 * 1024;
 const requestTimeoutMs = 20_000;
 
-/** @type {Record<string, Record<string, string>>} */
 let cookieJar = {};
 
 async function loadCookieJar() {
@@ -105,7 +113,6 @@ async function fetchRemotePage(rawUrl) {
   }
 }
 
-
 async function readJsonBody(req, limitBytes = 1024 * 1024) {
   const chunks = [];
   let received = 0;
@@ -149,10 +156,12 @@ await loadCookieJar();
 createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+
     if (url.pathname === '/api/health') {
       json(res, 200, { ok: true, cookieHosts: Object.keys(cookieJar).length });
       return;
     }
+
     if (url.pathname === '/api/fetch') {
       const target = url.searchParams.get('url');
       if (!target) {
@@ -162,21 +171,59 @@ createServer(async (req, res) => {
       json(res, 200, await fetchRemotePage(target));
       return;
     }
-    if (url.pathname === '/api/browser/status') {
-      json(res, 200, await browserRuntimeStatus());
+
+    if (url.pathname === '/api/browser/start' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (body.adapters) storeAdapters(body.adapters);
+      json(res, 200, await startBrowser());
       return;
     }
+
+    if (url.pathname === '/api/browser/open' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      if (!body.panelId || !body.url) {
+        json(res, 400, { ok: false, error: 'Missing panelId or url' });
+        return;
+      }
+      json(res, 200, await openBrowserPanel(body.panelId, body.url));
+      return;
+    }
+
     if (url.pathname === '/api/browser/search' && req.method === 'POST') {
       const body = await readJsonBody(req);
       json(res, 200, await runBrowserSearch(body));
       return;
     }
+
+    if (url.pathname === '/api/browser/continue' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      json(res, 200, await continueAfterVerification(body.panelId));
+      return;
+    }
+
+    if (url.pathname === '/api/browser/detail' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      json(res, 200, await extractDetailPage(body));
+      return;
+    }
+
+    if (url.pathname === '/api/browser/status') {
+      json(res, 200, await browserRuntimeStatus());
+      return;
+    }
+
     if (url.pathname === '/api/torrent/status') {
       json(res, 200, await torrentMetadataStatus());
       return;
     }
+
     if (url.pathname === '/api/torrent/metadata' && req.method === 'POST') {
       const body = await readJsonBody(req);
+      if (body.magnets && Array.isArray(body.magnets)) {
+        const results = await fetchManyTorrentMetadata(body.magnets, body.concurrency ?? 4, body.timeoutMs ?? 45_000);
+        json(res, 200, { items: results });
+        return;
+      }
       if (!body.magnetUri) {
         json(res, 400, { ok: false, error: 'Missing magnetUri' });
         return;
@@ -184,6 +231,7 @@ createServer(async (req, res) => {
       json(res, 200, await fetchTorrentMetadata(body.magnetUri, body.timeoutMs));
       return;
     }
+
     await serveStatic(req, res, url.pathname);
   } catch (error) {
     json(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -191,3 +239,6 @@ createServer(async (req, res) => {
 }).listen(port, () => {
   console.log(`Bit Resource Finder running at http://127.0.0.1:${port}`);
 });
+
+process.once('SIGINT', () => closeBrowserRuntime().finally(() => process.exit(0)));
+process.once('SIGTERM', () => closeBrowserRuntime().finally(() => process.exit(0)));

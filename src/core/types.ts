@@ -1,18 +1,38 @@
-export type GuideStep = 'idle' | 'searchInput' | 'searchButton' | 'resultItem' | 'magnetLink' | 'done';
+export type AdapterCaptureStep =
+  | 'idle'
+  | 'pick_search_input'
+  | 'pick_search_button'
+  | 'pick_result_item'
+  | 'pick_magnet_link'
+  | 'done';
 
-export interface SiteAdapter {
+export type Adapter = {
   id: string;
   name: string;
   homeUrl: string;
-  searchInputSelector?: string;
-  searchButtonSelector?: string;
-  resultItemSelector?: string;
-  magnetLinkSelector?: string;
-  searchUrlTemplate?: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
+  searchMode: 'browser' | 'url-template';
+
+  searchUrlTemplate?: string;
+
+  searchInputSelector: string;
+  searchButtonSelector: string;
+  resultItemSelector: string;
+  resultTitleSelector?: string;
+  resultLinkSelector?: string;
+
+  magnetLinkSelector: string;
+
+  waitAfterSearchMs: number;
+  waitAfterDetailMs: number;
+
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type SiteAdapter = Adapter;
+
+export type GuideStep = AdapterCaptureStep;
 
 export interface FetchedPage {
   url: string;
@@ -37,17 +57,25 @@ export interface RawMagnetResult {
 
 export interface TorrentFile {
   path: string;
+  name: string;
+  size: number;
+  extension: string;
   bytes: number;
 }
 
 export interface TorrentMetadata {
+  magnet: string;
   magnetUri: string;
-  infoHash?: string;
+  infoHash: string;
+  name: string;
   displayName?: string;
   files: TorrentFile[];
   totalBytes: number;
+  totalSize: number;
   seeders?: number;
-  status: 'pending' | 'analyzing' | 'complete' | 'timeout' | 'failed';
+  peers?: number;
+  status: 'ok' | 'timeout' | 'invalid' | 'no_metadata' | 'error' | 'pending' | 'analyzing' | 'complete' | 'failed';
+  elapsedMs: number;
   error?: string;
 }
 
@@ -55,25 +83,52 @@ export interface RuleScore {
   accepted: boolean;
   score: number;
   reasons: string[];
+  hardReject: boolean;
 }
 
 export interface AiScore {
   confidence: number;
   verdict: 'excellent' | 'good' | 'uncertain' | 'rejected';
   reasons: string[];
+  score: number;
+  is_real_video_resource: boolean;
+  is_ad_or_trap: boolean;
+  reason: string;
 }
 
 export interface RankedResult extends RawMagnetResult {
   metadata: TorrentMetadata;
   ruleScore: RuleScore;
   aiScore: AiScore;
+  finalScore: number;
 }
 
 export interface HistoryEntry {
   id: string;
   query: string;
+  keyword: string;
   createdAt: string;
   results: RankedResult[];
+}
+
+export interface SearchHistoryEntry {
+  id: string;
+  keyword: string;
+  createdAt: number;
+  results: FinalResult[];
+}
+
+export interface FinalResult {
+  id: string;
+  title: string;
+  magnet: string;
+  finalScore: number;
+  ruleScore: number;
+  aiScore: number;
+  infoHash: string;
+  files: TorrentFile[];
+  totalSize: number;
+  reasons: string[];
 }
 
 export interface ProgressItem {
@@ -85,10 +140,74 @@ export interface ProgressItem {
   message: string;
 }
 
+export type ProgressStage =
+  | 'idle'
+  | 'opening_site'
+  | 'waiting_verification'
+  | 'searching'
+  | 'extracting_results'
+  | 'extracting_magnets'
+  | 'fetching_metadata'
+  | 'rule_filtering'
+  | 'ai_scoring'
+  | 'done'
+  | 'failed';
+
+export interface ProgressState {
+  stage: ProgressStage;
+  message: string;
+  current: number;
+  total: number;
+  panels: Array<{
+    panelId: number;
+    siteName?: string;
+    status: string;
+    url?: string;
+  }>;
+}
+
 export interface AppSettings {
   concurrency: number;
   aiEndpoint: string;
   aiModel: string;
   confidenceThreshold: number;
   metadataTimeoutMs: number;
+  torrentConcurrency: number;
+}
+
+export interface BrowserPanelStatus {
+  panelId: number;
+  status: 'idle' | 'loading' | 'need_human_verification' | 'extracting' | 'done' | 'failed';
+  siteName?: string;
+  url?: string;
+  adapterId?: string;
+  error?: string;
+}
+
+export interface SearchExtractResult {
+  status: 'ok' | 'need_human_verification' | 'failed';
+  results: RawMagnetResult[];
+  message?: string;
+  panelId?: number;
+  adapterId?: string;
+}
+
+export interface MagnetExtractResult {
+  status: 'ok' | 'need_human_verification' | 'failed';
+  title: string;
+  detailUrl: string;
+  magnet: string;
+  message?: string;
+}
+
+export interface AiScoreItem {
+  id: string;
+  score: number;
+  is_real_video_resource: boolean;
+  is_ad_or_trap: boolean;
+  reason: string;
+}
+
+export interface AiBatchResponse {
+  items: AiScoreItem[];
 }
