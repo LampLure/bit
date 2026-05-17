@@ -3,23 +3,26 @@ set -e
 
 cd "$(dirname "$0")"
 
-export ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}"
+ELECTRON_VERSION="42.1.0"
+ELECTRON_DIST="node_modules/electron/dist"
 
 if [ ! -d node_modules ]; then
   echo "[start] Installing dependencies..."
-  ELECTRON_MIRROR="" npm install
+  ELECTRON_MIRROR="" npm install 2>/dev/null || npm install
 fi
 
-ELECTRON_EXEC="node_modules/electron/dist/electron"
-if [ ! -f "$ELECTRON_EXEC" ]; then
-  echo "[start] Electron binary missing, re-downloading from GitHub..."
-  ELECTRON_MIRROR="" npm install electron 2>/dev/null || true
-fi
-if [ ! -f "$ELECTRON_EXEC" ]; then
-  echo "[start] ERROR: Electron binary not installed."
-  echo "  Try: ELECTRON_MIRROR='' npm install electron"
-  echo "  Or download from: https://github.com/electron/electron/releases"
-  exit 1
+if [ ! -f "${ELECTRON_DIST}/electron" ]; then
+  echo "[start] Downloading Electron ${ELECTRON_VERSION}..."
+  mkdir -p "${ELECTRON_DIST}"
+  ZIP="/tmp/electron-v${ELECTRON_VERSION}.zip"
+  MIRROR_URL="https://npmmirror.com/mirrors/electron/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+  GH_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+
+  curl -fSL -o "$ZIP" "$MIRROR_URL" 2>/dev/null || curl -fSL -o "$ZIP" "$GH_URL"
+  unzip -oq "$ZIP" -d "${ELECTRON_DIST}"
+  rm -f "$ZIP"
+  chmod +x "${ELECTRON_DIST}/electron"
+  echo "[start] Electron binary installed."
 fi
 
 npm run app
