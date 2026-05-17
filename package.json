@@ -1,19 +1,25 @@
 {
   "name": "bit-resource-finder",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "postinstall": "npx playwright install chromium",
+    "app": "npm run build && node desktopLauncher.mjs",
+    "dev:app": "npm run build && node desktopLauncher.mjs",
     "dev": "npm run build && node server.mjs",
+    "server": "node server.mjs",
     "serve": "node server.mjs",
     "build": "tsc -p tsconfig.app.json && cp index.html dist/index.html && cp -R src/styles dist/styles",
     "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "tsc -p tsconfig.app.json --pretty false"
   },
   "dependencies": {
-    "playwright": "^1.60.0",
-    "typescript": "^6.0.3",
+    "playwright": "^1.49.0",
     "webtorrent": "^2.5.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "typescript": "^5.0.0"
   }
 }
