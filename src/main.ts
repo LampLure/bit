@@ -292,6 +292,9 @@ async function startElectronCapture(step: AdapterCaptureStep) {
   const api = getElectronPanelAPI();
   if (!api || !state.draftAdapter) return;
 
+  await api.createPanel(0);
+  requestPanelResize();
+
   await api.navigatePanel(0, state.draftAdapter.homeUrl);
   await new Promise((r) => setTimeout(r, 1500));
   await api.startSelectorCapture(0);

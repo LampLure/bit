@@ -41,9 +41,8 @@ function createMainWindow() {
 app.whenReady().then(() => {
   const persistSession = session.fromPartition('persist:magnet-ai-client');
 
-  panelManager = new PanelManager(mainWindow, persistSession);
-
   createMainWindow();
+  panelManager = new PanelManager(mainWindow, persistSession);
 
   ipcMain.handle('panel:create', (_event, panelId) => {
     panelManager.createPanel(panelId);
