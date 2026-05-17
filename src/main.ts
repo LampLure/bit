@@ -238,12 +238,12 @@ function render(): void {
 }
 
 function requestPanelResize() {
-  const panels = state.adapters.slice(0, state.panelCount);
-  const panelIds = panels.map((_, i) => i);
+  const api = (window as any).desktopPanels;
+  if (!api) return;
 
-  if ((window as any).desktopPanels) {
-    (window as any).desktopPanels.resizePanels(panelIds);
-  }
+  requestAnimationFrame(() => {
+    api.resizePanels();
+  });
 }
 
 async function ensurePanelsCreated() {

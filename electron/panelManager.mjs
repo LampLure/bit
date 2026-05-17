@@ -59,51 +59,20 @@ export class PanelManager {
     view.webContents.loadURL(url);
   }
 
-  resize(layout, winWidth, winHeight) {
-    const panelCount = layout.length;
-    if (panelCount === 0) return;
+  resize(layout) {
+    if (!Array.isArray(layout)) return;
 
-    const leftMargin = 340;
-
-    for (let i = 0; i < panelCount; i++) {
-      const view = this.panels.get(Number(layout[i]));
+    for (const item of layout) {
+      const panelId = Number(item.id);
+      const view = this.panels.get(panelId);
       if (!view) continue;
 
-      let x, y, w, h;
+      const x = Math.max(0, Number(item.x) || 0);
+      const y = Math.max(0, Number(item.y) || 0);
+      const width = Math.max(1, Number(item.width) || 1);
+      const height = Math.max(1, Number(item.height) || 1);
 
-      if (panelCount === 1) {
-        x = leftMargin;
-        y = 0;
-        w = winWidth - leftMargin;
-        h = winHeight;
-      } else if (panelCount === 2) {
-        x = leftMargin;
-        y = i === 0 ? 0 : Math.floor(winHeight / 2);
-        w = winWidth - leftMargin;
-        h = i === 0 ? Math.floor(winHeight / 2) : winHeight - Math.floor(winHeight / 2);
-      } else if (panelCount === 3) {
-        const halfW = Math.floor((winWidth - leftMargin) / 2);
-        if (i === 0) {
-          x = leftMargin;
-          y = 0;
-          w = halfW;
-          h = winHeight;
-        } else {
-          x = leftMargin + halfW;
-          y = i === 1 ? 0 : Math.floor(winHeight / 2);
-          w = winWidth - leftMargin - halfW;
-          h = i === 1 ? Math.floor(winHeight / 2) : winHeight - Math.floor(winHeight / 2);
-        }
-      } else {
-        const halfW = Math.floor((winWidth - leftMargin) / 2);
-        const halfH = Math.floor(winHeight / 2);
-        x = leftMargin + (i % 2 === 0 ? 0 : halfW);
-        y = i < 2 ? 0 : halfH;
-        w = halfW;
-        h = halfH;
-      }
-
-      view.setBounds({ x, y, width: w, height: h });
+      view.setBounds({ x, y, width, height });
     }
   }
 

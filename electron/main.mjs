@@ -57,9 +57,8 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('panel:resize', (_event, layout) => {
-    if (mainWindow) {
-      const { width, height } = mainWindow.getContentBounds();
-      panelManager.resize(layout, width, height);
+    if (panelManager) {
+      panelManager.resize(layout);
     }
   });
 
