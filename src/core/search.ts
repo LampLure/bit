@@ -3,7 +3,7 @@ import { scoreByRules } from './rules.js';
 import { analyzeMany } from './torrent.js';
 import { extractInfoHash, dedupeByInfoHash } from './hash.js';
 import { runBrowserSearch } from './browserClient.js';
-import type { Adapter, AppSettings, FinalResult, ProgressItem, RawMagnetResult, RankedResult, TorrentMetadata } from './types.js';
+import type { Adapter, AppSettings, FinalResult, ProgressItem, RawMagnetResult, RankedResult, TorrentFile, TorrentMetadata } from './types.js';
 
 export type ProgressCallback = (item: ProgressItem) => void;
 
@@ -121,19 +121,26 @@ async function rankResults(
 
   onProgress({ id: 'system-metadata', label: 'Metadata', phase: 'system', value: 0, status: 'running', message: '正在获取 metadata（不下载文件内容）' });
 
-  const magnets = rawResults.map((r) => r.magnetUri);
-  const metadataResults = await analyzeMany(magnets, settings.torrentConcurrency ?? 4, settings.metadataTimeoutMs);
+  const uniqueMagnets = [...new Set(rawResults.map((r) => r.magnetUri))];
+  const metadataResults = await analyzeMany(uniqueMagnets, settings.torrentConcurrency ?? 4, settings.metadataTimeoutMs);
 
-  onProgress({ id: 'system-metadata', label: 'Metadata', phase: 'system', value: 1, status: 'done', message: `metadata 获取完成` });
+  const okCount = metadataResults.filter((m) => m.status === 'ok').length;
+  const timeoutCount = metadataResults.filter((m) => m.status === 'timeout').length;
+  const errCount = metadataResults.filter((m) => m.status === 'error' || m.status === 'invalid').length;
+
+  onProgress({ id: 'system-metadata', label: 'Metadata', phase: 'system', value: 1, status: 'done', message: `metadata 获取完成 (成功${okCount}, 超时${timeoutCount}, 失败${errCount}, 共${metadataResults.length})` });
 
   onProgress({ id: 'system-rules', label: '规则预筛', phase: 'system', value: 0, status: 'running', message: '正在规则预筛' });
+
+  const resultByUri = new Map(rawResults.map((r) => [r.magnetUri, r]));
+  const metadataByUri = new Map(metadataResults.map((m) => [m.magnet, m]));
 
   const scoredCandidates: Array<{
     id: string;
     title: string;
     magnet: string;
     infoHash: string;
-    files: typeof metadataResults[0]['files'];
+    files: TorrentFile[];
     totalSize: number;
     ruleScore: number;
     ruleReasons: string[];
@@ -141,9 +148,8 @@ async function rankResults(
     metadata: TorrentMetadata;
   }> = [];
 
-  for (let i = 0; i < rawResults.length; i++) {
-    const raw = rawResults[i];
-    const meta = metadataResults[i];
+  for (const [uri, raw] of resultByUri) {
+    const meta = metadataByUri.get(uri);
     if (!meta) continue;
 
     const ih = extractInfoHash(raw.magnetUri) ?? '';
@@ -157,7 +163,7 @@ async function rankResults(
       magnet: raw.magnetUri,
       infoHash: ih,
       files: meta.files,
-      totalSize: meta.totalBytes,
+      totalSize: meta.totalSize,
       ruleScore: ruleScoreResult.score,
       ruleReasons: ruleScoreResult.reasons,
       rawResult: raw,
