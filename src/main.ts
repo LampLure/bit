@@ -1,7 +1,7 @@
 import { applyGuideCapture, guideMessages, guideToasts, nextGuideStep } from './core/adapterGuide.js';
 import { executeSearch } from './core/search.js';
 import { defaultSettings, loadAdapters, loadHistory, loadSearchHistory, loadSettings, pushHistory, pushSearchHistory, saveAdapters, saveSettings } from './core/storage.js';
-import { startBrowser, continueAfterVerification, getElectronPanelAPI, openPanel } from './core/browserClient.js';
+import { startBrowser, continueAfterVerification, getElectronPanelAPI } from './core/browserClient.js';
 import type { Adapter, AdapterCaptureStep, AppSettings, FinalResult, HistoryEntry, ProgressItem, SearchHistoryEntry } from './core/types.js';
 
 declare global {
@@ -30,6 +30,9 @@ interface State {
   panelUrls: Record<number, string>;
   panelTitles: Record<number, string>;
   panelStatuses: Record<number, string>;
+  adapterFormVisible: boolean;
+  adapterHomeUrl: string;
+  adapterName: string;
 }
 
 function nowTs(): number {
@@ -88,6 +91,9 @@ const state: State = {
   panelUrls: {},
   panelTitles: {},
   panelStatuses: {},
+  adapterFormVisible: false,
+  adapterHomeUrl: '',
+  adapterName: '',
 };
 
 (window as any).__adaptersStore = Object.fromEntries(state.adapters.map((a) => [a.id, a]));
@@ -104,6 +110,12 @@ function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
+}
+
+function updateSearchButtonState(): void {
+  const button = document.getElementById('search') as HTMLButtonElement | null;
+  if (!button) return;
+  button.disabled = state.running || !state.query.trim() || state.adapters.length === 0;
 }
 
 function upsertProgress(item: ProgressItem): void {
@@ -126,6 +138,18 @@ function showToast(message: string): void {
   }, 2000);
 }
 
+function renderAdapterForm(): string {
+  if (!state.adapterFormVisible) return '';
+
+  return `<section class="panel compact adapter-form">
+    <h2>新增资源站</h2>
+    <label class="field small"><span>首页 URL</span><input id="adapter-home-url" value="${escapeHtml(state.adapterHomeUrl)}" placeholder="https://example.org" /></label>
+    <label class="field small"><span>资源站名称</span><input id="adapter-name" value="${escapeHtml(state.adapterName)}" placeholder="留空则使用域名" /></label>
+    <button class="primary" id="save-adapter">保存并开始录制</button>
+    <button class="secondary" id="hide-adapter-form">取消</button>
+  </section>`;
+}
+
 function renderSidebar(): string {
   return `
     <aside class="sidebar">
@@ -137,6 +161,7 @@ function renderSidebar(): string {
       <label class="field"><span>并发数：${state.panelCount}</span><input id="concurrency" type="range" min="1" max="4" value="${state.panelCount}" /></label>
       <button class="primary" id="search" ${state.running || !state.query.trim() || state.adapters.length === 0 ? 'disabled' : ''}>${state.running ? '搜索中…' : '▶ 开始搜索'}</button>
       <button class="secondary" id="add-adapter">＋ 添加资源站</button>
+      ${renderAdapterForm()}
       ${state.guideStep !== 'idle' && state.guideStep !== 'done' ? `<button class="secondary" id="cancel-adapter">取消录制</button>` : ''}
       <section class="panel"><h2>资源站 adapters</h2>${state.adapters.length === 0 ? '<p class="muted">暂无资源站。</p>' : ''}${state.adapters.map((adapter) => `<div class="adapter-chip"><strong>${escapeHtml(adapter.name)}</strong><span>${escapeHtml(adapter.homeUrl)}</span></div>`).join('')}</section>
       <section class="panel"><h2>最近 5 次搜索</h2>${state.searchHistory.length === 0 ? '<p class="muted">暂无历史。</p>' : ''}${state.searchHistory.map((entry) => `<button class="history-item" data-history="${entry.id}"><strong>${escapeHtml(entry.keyword)}</strong><span>${new Date(entry.createdAt).toLocaleString()} · ${entry.results.length} 条</span></button>`).join('')}</section>
@@ -152,10 +177,6 @@ function renderMainContent(): string {
   }));
 
   const isGuideActive = state.guideStep !== 'idle' && state.guideStep !== 'done';
-  const isVerifying = panels.some((p) => {
-    const prog = p.progress;
-    return prog?.status === 'waiting' && prog?.message?.includes('验证');
-  });
 
   return `
     <main>
@@ -249,7 +270,6 @@ function requestPanelResize() {
 async function ensurePanelsCreated() {
   const api = getElectronPanelAPI();
   if (!api) return;
-  const panels = state.adapters.slice(0, state.panelCount);
   for (let i = 0; i < state.panelCount; i++) {
     await api.createPanel(i);
   }
@@ -310,6 +330,41 @@ async function startElectronCapture(step: AdapterCaptureStep) {
   }
 }
 
+function createDraftAdapterFromForm(): void {
+  const homeUrl = state.adapterHomeUrl.trim();
+  if (!homeUrl) {
+    showToast('请先填写资源站首页 URL');
+    return;
+  }
+
+  let parsedHome: URL;
+  try {
+    parsedHome = new URL(homeUrl);
+    if (!['http:', 'https:'].includes(parsedHome.protocol)) throw new Error('unsupported protocol');
+  } catch {
+    showToast('请输入有效的 http/https URL');
+    return;
+  }
+
+  const name = state.adapterName.trim() || parsedHome.host;
+  state.draftAdapter = newAdapter(name, parsedHome.href);
+  state.adapters = [
+    state.draftAdapter,
+    ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id),
+  ];
+  state.panelCount = Math.max(1, state.panelCount);
+  state.guideStep = 'pick_search_input';
+  state.previewUrl = parsedHome.href;
+  state.adapterFormVisible = false;
+  state.adapterHomeUrl = '';
+  state.adapterName = '';
+
+  persist();
+  showToast(guideMessages.pick_search_input);
+  render();
+  startElectronCapture('pick_search_input');
+}
+
 (window as any).__onPanelTitle = (panelId: number, title: string) => {
   state.panelTitles[panelId] = title;
 };
@@ -318,37 +373,29 @@ async function startElectronCapture(step: AdapterCaptureStep) {
 };
 
 function bindEvents(): void {
-  document.getElementById('query')?.addEventListener('input', (event) => { state.query = (event.target as HTMLInputElement).value; render(); });
+  document.getElementById('query')?.addEventListener('input', (event) => {
+    state.query = (event.target as HTMLInputElement).value;
+    updateSearchButtonState();
+  });
   document.getElementById('concurrency')?.addEventListener('input', (event) => { state.panelCount = Number((event.target as HTMLInputElement).value); persist(); render(); });
   document.getElementById('ai-endpoint')?.addEventListener('change', (event) => { state.settings.aiEndpoint = (event.target as HTMLInputElement).value; persist(); });
-  document.getElementById('threshold')?.addEventListener('input', (event) => { state.settings.confidenceThreshold = Number((event.target as HTMLInputElement).value); persist(); render(); });
+  document.getElementById('threshold')?.addEventListener('input', (event) => { state.settings.confidenceThreshold = Number((event.target as HTMLInputElement).value); persist(); });
+  document.getElementById('adapter-home-url')?.addEventListener('input', (event) => { state.adapterHomeUrl = (event.target as HTMLInputElement).value; });
+  document.getElementById('adapter-name')?.addEventListener('input', (event) => { state.adapterName = (event.target as HTMLInputElement).value; });
 
-  document.getElementById('add-adapter')?.addEventListener('click', async () => {
-    const homeUrl = prompt('请输入资源站首页 URL（http/https）', 'https://example.org')?.trim();
-    if (!homeUrl) return;
-    let parsedHome: URL;
-    try {
-      parsedHome = new URL(homeUrl);
-      if (!['http:', 'https:'].includes(parsedHome.protocol)) throw new Error('unsupported protocol');
-    } catch {
-      alert('请输入有效的 http/https URL');
-      return;
-    }
-    const name = prompt('请输入资源站名称', parsedHome.host)?.trim() || parsedHome.host;
-    state.draftAdapter = newAdapter(name, parsedHome.href);
-    state.adapters = [
-      state.draftAdapter,
-      ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id),
-    ];
-    state.panelCount = Math.max(1, state.panelCount);
-    state.guideStep = 'pick_search_input';
-    state.previewUrl = parsedHome.href;
-    persist();
-    showToast(guideMessages.pick_search_input);
+  document.getElementById('add-adapter')?.addEventListener('click', () => {
+    state.adapterFormVisible = true;
     render();
-
-    startElectronCapture('pick_search_input');
   });
+
+  document.getElementById('hide-adapter-form')?.addEventListener('click', () => {
+    state.adapterFormVisible = false;
+    state.adapterHomeUrl = '';
+    state.adapterName = '';
+    render();
+  });
+
+  document.getElementById('save-adapter')?.addEventListener('click', createDraftAdapterFromForm);
 
   document.getElementById('cancel-adapter')?.addEventListener('click', () => {
     if (state.draftAdapter) {
