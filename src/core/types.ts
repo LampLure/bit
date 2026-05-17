@@ -60,8 +60,15 @@ export interface TorrentFile {
   name: string;
   size: number;
   extension: string;
-  bytes: number;
+  bytes?: number;
 }
+
+export type TorrentMetadataStatus =
+  | 'ok'
+  | 'timeout'
+  | 'invalid'
+  | 'no_metadata'
+  | 'error';
 
 export interface TorrentMetadata {
   magnet: string;
@@ -70,11 +77,11 @@ export interface TorrentMetadata {
   name: string;
   displayName?: string;
   files: TorrentFile[];
-  totalBytes: number;
   totalSize: number;
+  totalBytes?: number;
   seeders?: number;
   peers?: number;
-  status: 'ok' | 'timeout' | 'invalid' | 'no_metadata' | 'error' | 'pending' | 'analyzing' | 'complete' | 'failed';
+  status: TorrentMetadataStatus;
   elapsedMs: number;
   error?: string;
 }

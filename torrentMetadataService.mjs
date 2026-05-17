@@ -14,9 +14,22 @@ export async function torrentMetadataStatus() {
     : { available: false, provider: 'webtorrent', error: loaded.error ?? 'Install WebTorrent: npm install webtorrent' };
 }
 
+function parseExtension(path) {
+  const name = path.split(/[\\/]/).pop() ?? path;
+  return name.split('.').pop()?.toLowerCase() ?? '';
+}
+
+function buildFileEntry(file) {
+  const path = file.path;
+  const name = path.split(/[\\/]/).pop() ?? path;
+  const size = file.length;
+  const extension = parseExtension(path);
+  return { path, name, size, extension, bytes: size };
+}
+
 export async function fetchTorrentMetadata(magnetUri, timeoutMs = 45_000) {
   const loaded = await loadWebTorrent();
-  if (!loaded.available) return { ok: false, unavailable: true, error: loaded.error ?? 'WebTorrent is not installed.' };
+  if (!loaded.available) return { magnet: magnetUri, infoHash: '', name: '', files: [], totalSize: 0, status: 'error', elapsedMs: 0, error: loaded.error };
 
   const startTime = Date.now();
 
@@ -26,13 +39,13 @@ export async function fetchTorrentMetadata(magnetUri, timeoutMs = 45_000) {
     try {
       client = new loaded.WebTorrent();
     } catch (e) {
-      resolve({ ok: false, status: 'invalid', error: e.message, elapsedMs: Date.now() - startTime });
+      resolve({ magnet: magnetUri, infoHash: '', name: '', files: [], totalSize: 0, status: 'invalid', elapsedMs: Date.now() - startTime, error: e.message });
       return;
     }
 
     const timeout = setTimeout(() => {
       try { client.destroy(); } catch {}
-      resolve({ ok: false, status: 'timeout', error: 'Timed out while fetching torrent metadata.', elapsedMs: Date.now() - startTime });
+      resolve({ magnet: magnetUri, infoHash: '', name: '', files: [], totalSize: 0, status: 'timeout', elapsedMs: Date.now() - startTime, error: 'Timed out while fetching torrent metadata.' });
     }, timeoutMs);
 
     try {
@@ -43,19 +56,14 @@ export async function fetchTorrentMetadata(magnetUri, timeoutMs = 45_000) {
         for (const file of torrent.files) {
           file.deselect?.();
         }
-        const files = torrent.files.map((file) => ({
-          path: file.path,
-          bytes: file.length,
-        }));
+        const files = torrent.files.map(buildFileEntry);
         const payload = {
-          ok: true,
-          status: 'ok',
-          magnetUri,
+          magnet: magnetUri,
           infoHash: torrent.infoHash,
-          displayName: torrent.name,
+          name: torrent.name ?? '',
           files,
-          totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
-          seeders: torrent.numPeers,
+          totalSize: files.reduce((sum, f) => sum + f.size, 0),
+          status: 'ok',
           elapsedMs: Date.now() - startTime,
         };
         try { client.destroy(); } catch {}
@@ -65,24 +73,31 @@ export async function fetchTorrentMetadata(magnetUri, timeoutMs = 45_000) {
       torrent.on('error', (error) => {
         clearTimeout(timeout);
         try { client.destroy(); } catch {}
-        resolve({ ok: false, status: 'error', error: error.message, infoHash: torrent?.infoHash, elapsedMs: Date.now() - startTime });
+        resolve({ magnet: magnetUri, infoHash: torrent?.infoHash || '', name: torrent?.name || '', files: [], totalSize: 0, status: 'error', elapsedMs: Date.now() - startTime, error: error.message });
       });
 
       torrent.on('warning', () => {});
     } catch (e) {
       clearTimeout(timeout);
       try { client.destroy(); } catch {}
-      resolve({ ok: false, status: 'invalid', error: e.message, elapsedMs: Date.now() - startTime });
+      resolve({ magnet: magnetUri, infoHash: '', name: '', files: [], totalSize: 0, status: 'invalid', elapsedMs: Date.now() - startTime, error: e.message });
     }
   });
 }
 
 export async function fetchManyTorrentMetadata(magnets, concurrency = 4, timeoutMs = 45_000) {
-  const results = [];
-  for (let i = 0; i < magnets.length; i += concurrency) {
-    const batch = magnets.slice(i, i + concurrency);
-    const batchResults = await Promise.all(batch.map((m) => fetchTorrentMetadata(m, timeoutMs)));
-    results.push(...batchResults);
+  const results = new Array(magnets.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < magnets.length) {
+      const idx = cursor;
+      cursor += 1;
+      results[idx] = await fetchTorrentMetadata(magnets[idx], timeoutMs);
+    }
   }
+
+  const workerCount = Math.min(concurrency, magnets.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
   return results;
 }

@@ -20,55 +20,12 @@ export function parseMagnetUri(magnetUri: string): { infoHash?: string; displayN
   }
 }
 
-export async function analyzeMagnetMetadata(
-  magnetUri: string,
+export async function analyzeMany(
+  magnets: string[],
+  concurrency: number,
   timeoutMs: number,
-): Promise<TorrentMetadata> {
-  const ih = extractInfoHash(magnetUri) ?? '';
-  if (!ih) {
-    return {
-      magnet: magnetUri,
-      magnetUri,
-      infoHash: '',
-      name: '',
-      files: [],
-      totalBytes: 0,
-      totalSize: 0,
-      status: 'invalid',
-      elapsedMs: 0,
-    };
-  }
-
-  try {
-    const items = await fetchTcMetadata([magnetUri], { concurrency: 1, timeoutMs });
-    const payload = items[0];
-    if (!payload) {
-      return {
-        magnet: magnetUri,
-        magnetUri,
-        infoHash: ih,
-        name: '',
-        files: [],
-        totalBytes: 0,
-        totalSize: 0,
-        status: 'error',
-        elapsedMs: 0,
-      };
-    }
-    return payload;
-  } catch {
-    return {
-      magnet: magnetUri,
-      magnetUri,
-      infoHash: ih,
-      name: '',
-      files: [],
-      totalBytes: 0,
-      totalSize: 0,
-      status: 'error',
-      elapsedMs: 0,
-    };
-  }
+): Promise<TorrentMetadata[]> {
+  return fetchTcMetadata(magnets, { concurrency, timeoutMs });
 }
 
 export function isVideoFile(path: string): boolean {
@@ -77,12 +34,4 @@ export function isVideoFile(path: string): boolean {
 
 export function isArchiveFile(path: string): boolean {
   return archiveExtensions.some((ext) => path.toLowerCase().endsWith(ext));
-}
-
-export async function analyzeMany(
-  magnets: string[],
-  concurrency: number,
-  timeoutMs: number,
-): Promise<TorrentMetadata[]> {
-  return fetchTcMetadata(magnets, { concurrency, timeoutMs });
 }

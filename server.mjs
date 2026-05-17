@@ -219,16 +219,13 @@ createServer(async (req, res) => {
 
     if (url.pathname === '/api/torrent/metadata' && req.method === 'POST') {
       const body = await readJsonBody(req);
-      if (body.magnets && Array.isArray(body.magnets)) {
-        const results = await fetchManyTorrentMetadata(body.magnets, body.concurrency ?? 4, body.timeoutMs ?? 45_000);
-        json(res, 200, { items: results });
+      const magnets = body.magnets && Array.isArray(body.magnets) ? body.magnets : null;
+      if (!magnets) {
+        json(res, 400, { ok: false, error: 'Missing magnets array' });
         return;
       }
-      if (!body.magnetUri) {
-        json(res, 400, { ok: false, error: 'Missing magnetUri' });
-        return;
-      }
-      json(res, 200, await fetchTorrentMetadata(body.magnetUri, body.timeoutMs));
+      const items = await fetchManyTorrentMetadata(magnets, body.concurrency ?? 4, body.timeoutMs ?? 45_000);
+      json(res, 200, { items });
       return;
     }
 

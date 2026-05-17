@@ -207,7 +207,7 @@ function renderResults(): string {
             <span>AI 评分：${result.aiScore}</span>
             <span>总大小：${formatBytes(result.totalSize)}</span>
           </div>
-          ${result.files.length > 0 ? `<h4>文件列表</h4><ul>${result.files.map((file) => `<li>${escapeHtml(file.path)} <span>${formatBytes(file.bytes)}</span></li>`).join('')}</ul>` : ''}
+          ${result.files.length > 0 ? `<h4>文件列表</h4><ul>${result.files.map((file) => `<li>${escapeHtml(file.path)} <span>${formatBytes(file.size)}</span></li>`).join('')}</ul>` : ''}
           ${result.reasons.length > 0 ? `<h4>评分理由</h4><ul>${result.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>` : ''}
         </div>
       </details>`).join('')}

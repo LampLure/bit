@@ -17,7 +17,7 @@ export function scoreByRules(
   const videoFiles = files.filter((file) => isVideoFile(file.path));
   const archiveFiles = files.filter((file) => isArchiveFile(file.path));
 
-  if (metadata.status === 'no_metadata' || metadata.status === 'timeout' || metadata.status === 'error' || metadata.status === 'invalid') {
+  if (metadata.status !== 'ok') {
     reasons.push('metadata 未成功获取');
     score -= 35;
     return {
@@ -36,10 +36,10 @@ export function scoreByRules(
     score += 20;
   }
 
-  if (metadata.totalBytes > 700 * 1024 ** 2) {
+  if (metadata.totalSize > 700 * 1024 ** 2) {
     reasons.push('总体积符合常见视频资源范围');
     score += 8;
-  } else if (metadata.totalBytes > 0) {
+  } else if (metadata.totalSize > 0) {
     reasons.push('总体积偏小');
     score -= 12;
   }
@@ -49,9 +49,9 @@ export function scoreByRules(
     score -= 20;
   }
 
-  if (metadata.totalBytes > 0 && videoFiles.length > 0) {
-    const videoBytes = videoFiles.reduce((sum, f) => sum + f.bytes, 0);
-    const videoRatio = videoBytes / metadata.totalBytes;
+  if (metadata.totalSize > 0 && videoFiles.length > 0) {
+    const videoBytes = videoFiles.reduce((sum, f) => sum + f.size, 0);
+    const videoRatio = videoBytes / metadata.totalSize;
     if (videoRatio < 0.3) {
       reasons.push('视频文件占比低于30%');
       score -= 18;
@@ -59,7 +59,7 @@ export function scoreByRules(
   }
 
   for (const file of videoFiles) {
-    if (file.bytes < 50 * 1024 * 1024) {
+    if (file.size < 50 * 1024 * 1024) {
       reasons.push(`视频文件 ${file.name} 体积过小（低于50MB）`);
       score -= 8;
       break;
@@ -71,11 +71,6 @@ export function scoreByRules(
   if (matchedAds.length > 0) {
     reasons.push(`标题包含疑似广告词：${matchedAds.join('、')}`);
     score -= 15;
-  }
-
-  if ((metadata.seeders ?? 0) > 30) {
-    reasons.push('活跃度较高');
-    score += 6;
   }
 
   if (keyword) {

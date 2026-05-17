@@ -12,7 +12,7 @@
 - 真实浏览器搜索链：Playwright persistent Chromium context，在真实浏览器中打开资源站首页、输入关键词、点击搜索按钮；检测到 Cloudflare 时暂停并提示用户人工验证，不绕过验证。
 - 服务端 API：`server.mjs` 提供 `/api/browser/*` 系列端点（start/open/search/continue/detail/status）和 `/api/torrent/metadata`。
 - 搜索流水线：按并发数建立任务队列，每个资源站调用浏览器搜索 API，提取搜索结果链接后逐个进入详情页提取 magnet 链接，按 btih hash 去重。
-- metadata-only torrent 分析：通过 WebTorrent 获取真实 DHT/tracker metadata 文件列表，不下载文件内容。单条超时默认 45 秒，全局并发默认 4-8。
+- metadata-only torrent 分析：通过 WebTorrent 获取真实 DHT/tracker metadata 文件列表，不下载文件内容。单条超时默认 45 秒，全局并发默认 4-8。/api/torrent/metadata 是本地 Node 服务暴露的内部接口，不依赖第三方外部 metadata API。
 - 规则预筛：过滤无视频文件、压缩包过多、视频占比低、广告词、标题相似度低等低质量候选。
 - AI 评分：批量发送候选到 llama.cpp endpoint，动态切分 token 预算，规则评分 × 0.45 + AI 评分 × 0.55 得到最终分。
 - AI 不可用时回退到规则评分，并在 UI 显示提示。
