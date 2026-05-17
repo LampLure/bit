@@ -1,0 +1,14 @@
+{
+  "name": "bit-resource-finder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "python3 -m http.server 4173 -d dist",
+    "build": "tsc -p tsconfig.app.json && cp index.html dist/index.html && cp -R src/styles dist/styles",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "lint": "tsc -p tsconfig.app.json --pretty false"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
