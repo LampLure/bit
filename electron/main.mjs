@@ -1,12 +1,21 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PanelManager } from './panelManager.mjs';
 
 const PORT = process.env.PORT ?? '4173';
 const BACKEND_URL = process.env.ELECTRON_BACKEND_URL ?? `http://127.0.0.1:${PORT}`;
+const ELECTRON_DIR = dirname(fileURLToPath(import.meta.url));
 
 let mainWindow = null;
 let panelManager = null;
+
+function emitPanelLayout() {
+  if (!mainWindow || !panelManager) return;
+  mainWindow.webContents.executeJavaScript(
+    `window.__emitPanelLayout && window.__emitPanelLayout()`,
+  ).catch(() => {});
+}
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -16,7 +25,7 @@ function createMainWindow() {
     minHeight: 600,
     title: 'Bit Resource Finder',
     webPreferences: {
-      preload: resolve(import.meta.dirname ?? '.', 'electron/preload.mjs'),
+      preload: resolve(ELECTRON_DIR, 'preload.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -25,13 +34,11 @@ function createMainWindow() {
 
   mainWindow.loadURL(BACKEND_URL);
 
-  mainWindow.on('resize', () => {
-    if (panelManager) {
-      mainWindow.webContents.executeJavaScript(
-        `window.__emitPanelLayout && window.__emitPanelLayout()`,
-      ).catch(() => {});
-    }
+  mainWindow.webContents.on('did-finish-load', () => {
+    emitPanelLayout();
   });
+
+  mainWindow.on('resize', emitPanelLayout);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -52,8 +59,9 @@ app.whenReady().then(() => {
     panelManager.destroyPanel(panelId);
   });
 
-  ipcMain.handle('panel:navigate', (_event, panelId, url) => {
-    panelManager.navigate(panelId, url);
+  ipcMain.handle('panel:navigate', async (_event, panelId, url) => {
+    emitPanelLayout();
+    return panelManager.navigate(panelId, url);
   });
 
   ipcMain.handle('panel:resize', (_event, layout) => {
