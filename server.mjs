@@ -3,17 +3,18 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync, createReadStream } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  browserRuntimeStatus,
-  startBrowser,
-  openBrowserPanel,
-  runBrowserSearch,
-  continueAfterVerification,
-  extractDetailPage,
-  storeAdapters,
-  closeBrowserRuntime,
-} from './browserRuntime.mjs';
-import { fetchTorrentMetadata, fetchManyTorrentMetadata, torrentMetadataStatus } from './torrentMetadataService.mjs';
+import { fetchManyTorrentMetadata, torrentMetadataStatus } from './torrentMetadataService.mjs';
+
+let playwrightRuntime;
+async function loadPlaywrightRuntime() {
+  if (playwrightRuntime) return playwrightRuntime;
+  try {
+    playwrightRuntime = await import('./playwrightRuntime.mjs');
+  } catch {
+    playwrightRuntime = { available: false };
+  }
+  return playwrightRuntime;
+}
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const distDir = resolve(__dirname, 'dist');
@@ -79,7 +80,7 @@ async function fetchRemotePage(rawUrl) {
       redirect: 'follow',
       signal: controller.signal,
       headers: {
-        'user-agent': 'Mozilla/5.0 BitResourceFinder/0.2 metadata-only local app',
+        'user-agent': 'Mozilla/5.0 BitResourceFinder/0.4 metadata-only local app',
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         ...(cookies ? { cookie: cookies } : {}),
       },
@@ -172,44 +173,43 @@ createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === '/api/browser/start' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      if (body.adapters) storeAdapters(body.adapters);
-      json(res, 200, await startBrowser());
-      return;
-    }
-
-    if (url.pathname === '/api/browser/open' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      if (!body.panelId || !body.url) {
-        json(res, 400, { ok: false, error: 'Missing panelId or url' });
+    if (url.pathname.startsWith('/api/browser/')) {
+      const rt = await loadPlaywrightRuntime();
+      if (!rt.startBrowser) {
+        json(res, 200, { ok: false, available: false, error: 'Playwright runtime not loaded. Use Electron panels for real browsing.' });
         return;
       }
-      json(res, 200, await openBrowserPanel(body.panelId, body.url));
-      return;
-    }
 
-    if (url.pathname === '/api/browser/search' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      json(res, 200, await runBrowserSearch(body));
-      return;
-    }
-
-    if (url.pathname === '/api/browser/continue' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      json(res, 200, await continueAfterVerification(body.panelId));
-      return;
-    }
-
-    if (url.pathname === '/api/browser/detail' && req.method === 'POST') {
-      const body = await readJsonBody(req);
-      json(res, 200, await extractDetailPage(body));
-      return;
-    }
-
-    if (url.pathname === '/api/browser/status') {
-      json(res, 200, await browserRuntimeStatus());
-      return;
+      if (url.pathname === '/api/browser/start' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (body.adapters) rt.storeAdapters(body.adapters);
+        json(res, 200, await rt.startBrowser());
+        return;
+      }
+      if (url.pathname === '/api/browser/open' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        json(res, 200, await rt.openBrowserPanel(body.panelId, body.url));
+        return;
+      }
+      if (url.pathname === '/api/browser/search' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        json(res, 200, await rt.runBrowserSearch(body));
+        return;
+      }
+      if (url.pathname === '/api/browser/continue' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        json(res, 200, await rt.continueAfterVerification(body.panelId));
+        return;
+      }
+      if (url.pathname === '/api/browser/detail' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        json(res, 200, await rt.extractDetailPage(body));
+        return;
+      }
+      if (url.pathname === '/api/browser/status') {
+        json(res, 200, await rt.browserRuntimeStatus());
+        return;
+      }
     }
 
     if (url.pathname === '/api/torrent/status') {
@@ -236,6 +236,3 @@ createServer(async (req, res) => {
 }).listen(port, () => {
   console.log(`Bit Resource Finder running at http://127.0.0.1:${port}`);
 });
-
-process.once('SIGINT', () => closeBrowserRuntime().finally(() => process.exit(0)));
-process.once('SIGTERM', () => closeBrowserRuntime().finally(() => process.exit(0)));
