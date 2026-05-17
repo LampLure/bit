@@ -126,6 +126,14 @@ export async function runBrowserSearch(body) {
       return { status: 'need_human_verification', results: [], message: '检测到验证页面，请人工完成验证后继续', panelId, adapterId };
     }
 
+    panelTasks.set(panelId, {
+      panelId,
+      status: 'searching',
+      siteName: adapter.name,
+      url: page.url(),
+      page,
+    });
+
     if (adapter.searchInputSelector) {
       await page.locator(adapter.searchInputSelector).fill(keyword, { timeout: 15_000 }).catch(() => {});
       if (adapter.searchButtonSelector) {
@@ -154,7 +162,7 @@ export async function runBrowserSearch(body) {
 
     panelTasks.set(panelId, {
       panelId,
-      status: 'extracting',
+      status: 'extracting_results',
       siteName: adapter.name,
       url: page.url(),
       page,
@@ -164,6 +172,13 @@ export async function runBrowserSearch(body) {
     const resultLinks = await collectResultLinks(page, adapter);
 
     for (const link of resultLinks.slice(0, maxDetailPagesPerAdapter)) {
+      panelTasks.set(panelId, {
+        panelId,
+        status: 'extracting_detail',
+        siteName: adapter.name,
+        url: link.url,
+        page,
+      });
       await page.goto(link.url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
       if (await detectVerificationPage(page)) continue;
       const detailMagnets = await collectMagnetsFromPage(page, adapter, link.title, page.url());
@@ -208,6 +223,13 @@ export async function continueAfterVerification(panelId) {
       return { ok: false, error: 'No search input selector' };
     }
 
+    panelTasks.set(panelId, {
+      ...task,
+      status: 'searching',
+      url: page.url(),
+      searchPending: { adapter, keyword },
+    });
+
     await page.locator(adapter.searchInputSelector).fill(keyword, { timeout: 15_000 }).catch(() => {});
     if (adapter.searchButtonSelector) {
       await Promise.all([
@@ -230,10 +252,25 @@ export async function continueAfterVerification(panelId) {
       return { ok: false, needVerification: true, message: '仍检测到验证页面' };
     }
 
+    panelTasks.set(panelId, {
+      panelId,
+      status: 'extracting_results',
+      siteName: adapter.name,
+      url: page.url(),
+      page,
+    });
+
     const results = await extractResultsFromPage(page, adapter, page.url());
     const resultLinks = await collectResultLinks(page, adapter);
 
     for (const link of resultLinks.slice(0, maxDetailPagesPerAdapter)) {
+      panelTasks.set(panelId, {
+        panelId,
+        status: 'extracting_detail',
+        siteName: adapter.name,
+        url: link.url,
+        page,
+      });
       await page.goto(link.url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => undefined);
       if (await detectVerificationPage(page)) continue;
       const detailMagnets = await collectMagnetsFromPage(page, adapter, link.title, page.url());

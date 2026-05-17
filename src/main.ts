@@ -1,6 +1,7 @@
 import { applyGuideCapture, guideMessages, guideToasts, nextGuideStep } from './core/adapterGuide.js';
 import { executeSearch } from './core/search.js';
 import { defaultSettings, loadAdapters, loadHistory, loadSearchHistory, loadSettings, pushHistory, pushSearchHistory, saveAdapters, saveSettings } from './core/storage.js';
+import { startBrowser, continueAfterVerification } from './core/browserClient.js';
 import type { Adapter, AdapterCaptureStep, AppSettings, FinalResult, HistoryEntry, ProgressItem, SearchHistoryEntry } from './core/types.js';
 
 interface State {
@@ -232,21 +233,7 @@ function render(): void {
 
 async function startBrowserIfNeeded(): Promise<void> {
   try {
-    const statusResponse = await fetch('/api/browser/status');
-    const status = await statusResponse.json();
-    if (!status.started) {
-      await fetch('/api/browser/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adapters: state.adapters }),
-      });
-    } else {
-      await fetch('/api/browser/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adapters: state.adapters }),
-      });
-    }
+    await startBrowser(state.adapters);
   } catch {
     upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: '浏览器启动失败，请确保已安装 Playwright' });
   }
@@ -364,12 +351,7 @@ function bindEvents(): void {
     if (Number.isNaN(panelId)) return;
 
     try {
-      const response = await fetch('/api/browser/continue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ panelId }),
-      });
-      const result = await response.json();
+      const result = await continueAfterVerification(panelId);
 
       if (result.needVerification) {
         showToast('仍检测到验证页面，请继续完成验证');

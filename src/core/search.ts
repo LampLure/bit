@@ -2,6 +2,7 @@ import { scoreWithAi } from './ai.js';
 import { scoreByRules } from './rules.js';
 import { analyzeMany } from './torrent.js';
 import { extractInfoHash, dedupeByInfoHash } from './hash.js';
+import { runBrowserSearch } from './browserClient.js';
 import type { Adapter, AppSettings, FinalResult, ProgressItem, RawMagnetResult, RankedResult, TorrentMetadata } from './types.js';
 
 export type ProgressCallback = (item: ProgressItem) => void;
@@ -34,12 +35,7 @@ export async function searchWithBrowser(
       });
 
       try {
-        const r = await fetch('/api/browser/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapterId: adapter.id, keyword, panelId }),
-        });
-        const result = await r.json();
+        const result = await runBrowserSearch(adapter.id, keyword, panelId);
 
         if (result.status === 'need_human_verification') {
           onProgress({
@@ -153,7 +149,7 @@ async function rankResults(
     const ih = extractInfoHash(raw.magnetUri) ?? '';
     const ruleScoreResult = scoreByRules(raw.title, meta, keyword);
 
-    if (ruleScoreResult.hardReject) continue;
+    if (ruleScoreResult.hardReject || !ruleScoreResult.accepted) continue;
 
     scoredCandidates.push({
       id: raw.id,

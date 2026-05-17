@@ -1,5 +1,6 @@
 import type { TorrentFile, TorrentMetadata } from './types.js';
 import { extractInfoHash } from './hash.js';
+import { fetchTorrentMetadata as fetchTcMetadata } from './torrentClient.js';
 
 const videoExtensions = ['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.webm', '.flv'];
 const archiveExtensions = ['.zip', '.rar', '.7z', '.tar', '.gz', '.iso'];
@@ -39,12 +40,9 @@ export async function analyzeMagnetMetadata(
   }
 
   try {
-    const response = await fetch('/api/torrent/metadata', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ magnetUri, timeoutMs }),
-    });
-    if (!response.ok) {
+    const items = await fetchTcMetadata([magnetUri], { concurrency: 1, timeoutMs });
+    const payload = items[0];
+    if (!payload) {
       return {
         magnet: magnetUri,
         magnetUri,
@@ -57,46 +55,7 @@ export async function analyzeMagnetMetadata(
         elapsedMs: 0,
       };
     }
-    const payload = await response.json();
-
-    if (!payload.ok || payload.unavailable) {
-      return {
-        magnet: magnetUri,
-        magnetUri,
-        infoHash: payload.infoHash ?? ih,
-        name: payload.displayName ?? '',
-        displayName: payload.displayName,
-        files: [],
-        totalBytes: payload.totalBytes ?? 0,
-        totalSize: payload.totalBytes ?? 0,
-        status: payload.status === 'timeout' ? 'timeout' : 'error',
-        elapsedMs: payload.elapsedMs ?? 0,
-        error: payload.error,
-      };
-    }
-
-    const files: TorrentFile[] = (payload.files ?? []).map((f: any) => ({
-      path: f.path ?? '',
-      name: f.path?.split(/[\\/]/).pop() ?? '',
-      size: f.bytes ?? f.length ?? 0,
-      extension: (f.path ?? '').split('.').pop()?.toLowerCase() ?? '',
-      bytes: f.bytes ?? f.length ?? 0,
-    }));
-
-    return {
-      magnet: magnetUri,
-      magnetUri,
-      infoHash: payload.infoHash ?? ih,
-      name: payload.displayName ?? '',
-      displayName: payload.displayName,
-      files,
-      totalBytes: payload.totalBytes ?? 0,
-      totalSize: payload.totalBytes ?? 0,
-      seeders: payload.seeders,
-      peers: payload.peers,
-      status: 'ok',
-      elapsedMs: payload.elapsedMs ?? 0,
-    };
+    return payload;
   } catch {
     return {
       magnet: magnetUri,
@@ -125,11 +84,5 @@ export async function analyzeMany(
   concurrency: number,
   timeoutMs: number,
 ): Promise<TorrentMetadata[]> {
-  const results: TorrentMetadata[] = [];
-  for (let i = 0; i < magnets.length; i += concurrency) {
-    const batch = magnets.slice(i, i + concurrency);
-    const batchResults = await Promise.all(batch.map((m) => analyzeMagnetMetadata(m, timeoutMs)));
-    results.push(...batchResults);
-  }
-  return results;
+  return fetchTcMetadata(magnets, { concurrency, timeoutMs });
 }

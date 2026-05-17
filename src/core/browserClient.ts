@@ -2,8 +2,12 @@ import type { BrowserPanelStatus, MagnetExtractResult, SearchExtractResult } fro
 
 const API = '/api/browser';
 
-export async function startBrowser(): Promise<void> {
-  const r = await fetch(`${API}/start`, { method: 'POST' });
+export async function startBrowser(adapters?: any[]): Promise<void> {
+  const r = await fetch(`${API}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ adapters }),
+  });
   if (!r.ok) throw new Error(`startBrowser failed: ${r.status}`);
 }
 
@@ -29,13 +33,13 @@ export async function runBrowserSearch(
   return r.json() as Promise<SearchExtractResult>;
 }
 
-export async function continueAfterVerification(panelId: number): Promise<void> {
+export async function continueAfterVerification(panelId: number): Promise<{ ok: boolean; needVerification?: boolean; results?: any[]; error?: string }> {
   const r = await fetch(`${API}/continue`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ panelId }),
   });
-  if (!r.ok) throw new Error(`continueAfterVerification failed: ${r.status}`);
+  return r.json();
 }
 
 export async function extractDetail(
