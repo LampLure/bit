@@ -1,9 +1,24 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 
 const PORT = process.env.PORT ?? '4173';
 const HEALTH_URL = `http://127.0.0.1:${PORT}/api/health`;
 const ROOT = resolve(import.meta.dirname ?? '.');
+
+function findElectronBinary() {
+  const candidates = [
+    resolve(ROOT, 'node_modules', 'electron', 'dist', 'electron'),
+    resolve(ROOT, 'node_modules', '.bin', 'electron'),
+  ];
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+  throw new Error(
+    'Electron binary not found. Try: npm install electron\n' +
+    'Or download manually: npx @electron/get --version=42.1.0'
+  );
+}
 
 function waitForHealth(url, timeoutMs = 15000) {
   const start = Date.now();
@@ -49,8 +64,9 @@ async function main() {
     process.exit(1);
   }
 
-  const electronBin = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const electron = spawn(electronBin, ['electron', 'electron/main.mjs'], {
+  const electronPath = findElectronBinary();
+  console.log('[launcher] Using electron at:', electronPath);
+  const electron = spawn(electronPath, ['electron/main.mjs'], {
     stdio: 'inherit',
     env: { ...process.env, PORT, ELECTRON_BACKEND_URL: `http://127.0.0.1:${PORT}` },
     cwd: ROOT,
