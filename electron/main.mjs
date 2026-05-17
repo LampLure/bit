@@ -28,6 +28,7 @@ function createMainWindow() {
       preload: resolve(ELECTRON_DIR, 'preload.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
     backgroundColor: '#0c111d',
   });
