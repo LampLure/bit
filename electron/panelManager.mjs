@@ -20,7 +20,8 @@ export class PanelManager {
     });
 
     this.mainWindow.addBrowserView(view);
-    view.setAutoResize({ width: true, height: true });
+    view.setAutoResize({ width: false, height: false });
+    view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
 
     view.webContents.on('page-title-updated', () => {
       const title = view.webContents.getTitle();
@@ -42,7 +43,7 @@ export class PanelManager {
     const view = this.panels.get(panelId);
     if (!view) return;
     this.mainWindow.removeBrowserView(view);
-    (view.webContents).destroy();
+    view.webContents.destroy();
     this.panels.delete(panelId);
     this.captureCallbacks.delete(panelId);
   }
@@ -62,6 +63,8 @@ export class PanelManager {
   resize(layout) {
     if (!Array.isArray(layout)) return;
 
+    const visibleIds = new Set();
+
     for (const item of layout) {
       const panelId = Number(item.id);
       const view = this.panels.get(panelId);
@@ -72,7 +75,14 @@ export class PanelManager {
       const width = Math.max(1, Number(item.width) || 1);
       const height = Math.max(1, Number(item.height) || 1);
 
+      visibleIds.add(panelId);
       view.setBounds({ x, y, width, height });
+    }
+
+    for (const [panelId, view] of this.panels) {
+      if (!visibleIds.has(panelId)) {
+        view.setBounds({ x: 0, y: 0, width: 1, height: 1 });
+      }
     }
   }
 
