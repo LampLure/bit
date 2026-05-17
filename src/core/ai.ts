@@ -98,6 +98,17 @@ function parseAiResponse(text: string): AiScoreItem[] | null {
   }
 }
 
+export interface AiScoreResult {
+  id: string;
+  aiScore: number;
+  finalScore: number;
+  ruleScore: number;
+  isRealVideoResource: boolean;
+  isAdOrTrap: boolean;
+  reason: string;
+  aiScoreDetail: AiScore;
+}
+
 export async function scoreWithAi(
   candidates: Array<{ id: string; title: string; magnet: string; infoHash: string; files: TorrentFile[]; totalSize: number; ruleScore: number; ruleReasons: string[] }>,
   options: AiScorerOptions,
