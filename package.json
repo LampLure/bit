@@ -1,0 +1,15 @@
+{
+  "name": "bit-resource-finder",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && node server.mjs",
+    "serve": "node server.mjs",
+    "build": "tsc -p tsconfig.app.json && cp index.html dist/index.html && cp -R src/styles dist/styles",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "lint": "tsc -p tsconfig.app.json --pretty false"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
