@@ -13,6 +13,19 @@ export interface SiteAdapter {
   updatedAt: string;
 }
 
+
+export interface FetchedPage {
+  url: string;
+  status: number;
+  ok: boolean;
+  title: string;
+  html: string;
+  cloudflareDetected: boolean;
+  error?: string;
+}
+
+export type PageFetcher = (url: string) => Promise<FetchedPage>;
+
 export interface RawMagnetResult {
   id: string;
   sourceAdapterId: string;

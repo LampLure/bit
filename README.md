@@ -1,36 +1,57 @@
 # Bit Resource Finder
 
-一个本地优先的资源搜索桌面应用原型，实现了需求讨论中的核心数据流：
+一个本地优先的资源搜索应用。当前版本已经从单纯 UI 原型升级为“本地 HTTP 服务 + 前端 GUI”的可运行实现：前端负责界面、adapter 管理、DOM selector 解析和结果展示；本地服务负责跨域抓取页面、保存站点 cookies，并把 HTML 交给前端按 adapter selector 提取结果。
 
-- 左侧边栏：搜索、并发数、资源站 adapter、最近 5 条历史记录、AI 参数。
-- 右侧分屏：最多 4 个浏览器窗格，用于后续接入 Tauri WebView / Playwright 持久化上下文。
-- 半自动资源站指引：按“搜索框 → 搜索按钮 → 搜索结果 → 磁力链接”捕获 selector 并保存 adapter。
-- 搜索流水线：adapter 抓取模拟、Cloudflare 人工验证状态提示、磁力 metadata 分析、规则预筛、LLaMACpp HTTP 评分回退到本地启发式评分。
-- 结果列表：按置信度排序，展开显示磁力链接、文件列表、规则评分和 AI 理由。
+> 请仅将本项目用于你有权访问和分享的合法资源。本应用不会下载文件内容；metadata 阶段只解析 magnet 本身或根据页面信息构建候选文件信息。使用任何资源站时请遵守目标站点服务条款和当地法律。
 
-> 请仅将本项目用于你有权访问和分享的合法资源。本原型不会下载文件，metadata 阶段也仅用于展示程序结构；生产版本应继续保持“不下载内容”的边界并遵守目标站点服务条款。
+## 已实现能力
+
+- 左侧边栏：搜索关键字、1~4 并发、资源站 adapter、最近 5 条历史记录、LLaMACpp endpoint 和展示阈值。
+- 右侧分屏：最多 4 个浏览器窗格；新增 adapter 时会通过本地抓取服务加载页面预览。
+- 半自动 adapter 指引：按“搜索框 → 搜索按钮 → 搜索结果 → 磁力链接”捕获 CSS selector；可以点击预览页元素自动捕获，也可以手动输入 selector。
+- 本地抓取服务：`server.mjs` 提供 `/api/fetch`，支持 http/https 页面抓取、超时、HTML 大小限制、Cloudflare/验证页检测和简单 cookie jar 持久化。
+- 搜索流水线：根据 adapter 的 `searchUrlTemplate` 访问搜索页，使用 `resultItemSelector` 找结果详情页，再使用 `magnetLinkSelector` 提取 magnet 链接。
+- 本地分析：metadata-only 边界，不下载文件；规则预筛会过滤无视频文件、广告词、压缩包过多等低质量候选。
+- AI 评分：优先调用本地 llama.cpp HTTP endpoint；不可用时回退到确定性的本地启发式评分。
+- 历史缓存：最近 5 次搜索结果保存在浏览器 `localStorage`。
 
 ## 开发命令
 
 ```bash
-npm install
-npm run dev
-npm run build
-npm test
+npm run dev      # build 后启动本地服务，访问 http://127.0.0.1:4173
+npm run build    # TypeScript 编译到 dist/
+npm run serve    # 仅启动已构建的 dist/ 服务
+npm run lint     # TypeScript 编译检查
+npm test         # 构建后运行 Node 内置测试
 ```
+
+本项目刻意不依赖 npm 第三方包，便于在受限环境中构建和运行。
+
+## 使用流程
+
+1. 执行 `npm run dev`，打开 `http://127.0.0.1:4173`。
+2. 点击“添加资源站”，填写首页 URL、资源站名称和搜索 URL 模板；搜索模板中用 `{query}` 表示关键词。
+3. 预览页加载完成后，按提示点击搜索框、搜索按钮、搜索结果项、磁力链接元素，或手动填写 CSS selector。
+4. 输入关键词，选择 1~4 并发，点击“开始搜索”。
+5. 查看进度面板；如果检测到 Cloudflare/验证页，当前版本会停止该站点任务并提示用户，避免绕过验证；后续 Tauri/WebView 版本可接入真实人工验证后的持久化上下文。
+6. 展开结果卡片查看 magnet、文件列表、规则评分和 AI 评分理由。
 
 ## 目录结构
 
 ```text
-src/
-  main.ts                 无框架 GUI 与应用状态编排
-  core/                   adapter、搜索、metadata、规则、AI、缓存逻辑
-  styles/app.css          全局样式
+server.mjs                本地 HTTP 服务、跨域抓取、cookie jar
+src/main.ts               GUI、adapter 指引、事件绑定
+src/core/search.ts        真实 HTML 抓取/selector 解析/并发搜索流水线
+src/core/torrent.ts       metadata-only magnet 分析边界
+src/core/rules.ts         规则预筛
+src/core/ai.ts            llama.cpp HTTP 调用与本地回退评分
+src/core/storage.ts       localStorage 持久化
+src/styles/app.css        全局样式
+tests/                    Node 内置测试
 ```
 
-## 后续接入建议
+## 仍需平台级增强
 
-1. 将 `BrowserGrid` 中的 iframe/占位窗格替换为 Tauri WebView 或 Playwright 有头浏览器管理层。
-2. 将 `executeSearch` 的 demo adapter 搜索替换为真实 selector 操作，保留当前进度回调接口。
-3. 将 `analyzeMagnetMetadata` 替换为 WebTorrent / Rust libtorrent metadata-only 实现，继续禁止内容下载。
-4. 将 `scoreWithAi` 对接本地 llama.cpp server，要求模型严格输出 JSON。
+- 如果要做成真正双击安装包，可在此基础上包一层 Tauri，把 `server.mjs` 的抓取逻辑迁移到 Rust command。
+- 真实 DHT / tracker metadata 获取需要接入 libtorrent/WebTorrent 这类专用引擎；当前实现保持“不下载内容”的安全边界。
+- Cloudflare 不能也不应该绕过；当前只检测验证页并停止该站点任务，cookie jar 只保存普通 HTTP 抓取响应中的 cookies。
