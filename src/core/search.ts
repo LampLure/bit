@@ -1,173 +1,218 @@
 import { scoreWithAi } from './ai.js';
 import { scoreByRules } from './rules.js';
-import { analyzeMagnetMetadata } from './torrent.js';
-import type { AppSettings, PageFetcher, ProgressItem, RankedResult, RawMagnetResult, SiteAdapter } from './types.js';
+import { analyzeMany } from './torrent.js';
+import { extractInfoHash, dedupeByInfoHash } from './hash.js';
+import type { Adapter, AppSettings, FinalResult, ProgressItem, RawMagnetResult, RankedResult, TorrentMetadata } from './types.js';
 
 export type ProgressCallback = (item: ProgressItem) => void;
 
-const maxResultsPerAdapter = 10;
-const maxDetailPagesPerAdapter = 8;
+export async function searchWithBrowser(
+  keyword: string,
+  adapters: Adapter[],
+  settings: AppSettings,
+  onProgress: ProgressCallback,
+): Promise<FinalResult[]> {
+  const activeAdapters = adapters.slice(0, Math.max(1, Math.min(4, settings.concurrency)));
+  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 0, status: 'running', message: `启动 ${activeAdapters.length} 个资源站任务` });
 
-function absoluteUrl(href: string | null, baseUrl: string): string | undefined {
-  if (!href) return undefined;
-  try {
-    return new URL(href, baseUrl).href;
-  } catch {
-    return undefined;
-  }
-}
+  const allRawResults: RawMagnetResult[] = [];
+  const queue = [...activeAdapters];
 
-function magnetId(adapter: SiteAdapter, magnetUri: string, index: number): string {
-  const hash = Array.from(`${adapter.id}-${magnetUri}`)
-    .map((char) => char.charCodeAt(0).toString(16).padStart(2, '0'))
-    .join('')
-    .slice(0, 24);
-  return `${adapter.id}-${hash}-${index}`;
-}
+  const workers = Array.from({ length: Math.min(settings.concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const adapter = queue.shift();
+      if (!adapter) break;
+      const panelId = activeAdapters.indexOf(adapter);
 
-function extractText(element: Element): string {
-  return (element.textContent ?? '').replace(/\s+/g, ' ').trim();
-}
+      onProgress({
+        id: `panel-${panelId}`,
+        label: adapter.name,
+        phase: 'browser',
+        value: 0.1,
+        status: 'running',
+        message: `正在打开 ${adapter.name}`,
+      });
 
-function parseMagnetResultsFromDocument(
-  adapter: SiteAdapter,
-  document: Document,
-  pageUrl: string,
-  fallbackTitle: string,
-): RawMagnetResult[] {
-  const selector = adapter.magnetLinkSelector?.trim() || 'a[href^="magnet:"]';
-  const elements = Array.from(document.querySelectorAll(selector));
-  return elements
-    .map((element, index): RawMagnetResult | undefined => {
-      const link = element instanceof HTMLAnchorElement ? element.href : element.getAttribute('href') ?? '';
-      if (!link.startsWith('magnet:')) return undefined;
-      const title = extractText(element.closest(adapter.resultItemSelector || 'article, li, tr, div') ?? element) || fallbackTitle || `Magnet ${index + 1}`;
-      return {
-        id: magnetId(adapter, link, index),
-        sourceAdapterId: adapter.id,
-        sourceName: adapter.name,
-        title,
-        magnetUri: link,
-        detailUrl: pageUrl,
-      };
-    })
-    .filter((item): item is RawMagnetResult => Boolean(item));
-}
+      try {
+        const r = await fetch('/api/browser/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adapterId: adapter.id, keyword, panelId }),
+        });
+        const result = await r.json();
 
-function parseResultLinks(adapter: SiteAdapter, document: Document, pageUrl: string): Array<{ title: string; url: string }> {
-  if (!adapter.resultItemSelector) return [];
-  const elements = Array.from(document.querySelectorAll(adapter.resultItemSelector));
-  const links: Array<{ title: string; url: string }> = [];
-  for (const element of elements.slice(0, maxResultsPerAdapter)) {
-    const anchor = element instanceof HTMLAnchorElement ? element : element.querySelector('a[href]');
-    const url = absoluteUrl(anchor?.getAttribute('href') ?? null, pageUrl);
-    if (!url || url.startsWith('magnet:')) continue;
-    links.push({ title: extractText(element) || anchor?.textContent?.trim() || url, url });
-  }
-  return links;
-}
+        if (result.status === 'need_human_verification') {
+          onProgress({
+            id: `panel-${panelId}`,
+            label: adapter.name,
+            phase: 'browser',
+            value: 0.5,
+            status: 'waiting',
+            message: '等待用户完成人机验证',
+          });
+          allRawResults.push({
+            id: `${adapter.id}-verification`,
+            sourceAdapterId: adapter.id,
+            sourceName: adapter.name,
+            title: '等待验证',
+            magnetUri: '',
+            detailUrl: '',
+          });
+          continue;
+        }
 
-async function runAdapterSearch(adapter: SiteAdapter, query: string, index: number, fetchPage: PageFetcher, onProgress: ProgressCallback): Promise<RawMagnetResult[]> {
-  const progressId = `browser-${adapter.id}`;
-  const searchUrl = adapter.searchUrlTemplate
-    ? adapter.searchUrlTemplate.replaceAll('{query}', encodeURIComponent(query))
-    : adapter.homeUrl;
+        if (result.status === 'failed') {
+          onProgress({
+            id: `panel-${panelId}`,
+            label: adapter.name,
+            phase: 'browser',
+            value: 1,
+            status: 'error',
+            message: result.message ?? '搜索失败',
+          });
+          continue;
+        }
 
-  onProgress({ id: progressId, label: adapter.name, phase: 'browser', value: 0.1, status: 'running', message: `加载 ${searchUrl}` });
-  const searchPage = await fetchPage(searchUrl);
-  if (searchPage.cloudflareDetected) {
-    onProgress({ id: progressId, label: adapter.name, phase: 'browser', value: 0.3, status: 'waiting', message: '检测到 Cloudflare/验证页，请在浏览器窗格完成验证后重试' });
-    return [];
-  }
-  if (!searchPage.ok) {
-    onProgress({ id: progressId, label: adapter.name, phase: 'browser', value: 1, status: 'error', message: searchPage.error ?? `HTTP ${searchPage.status}` });
-    return [];
-  }
+        onProgress({
+          id: `panel-${panelId}`,
+          label: adapter.name,
+          phase: 'browser',
+          value: 0.8,
+          status: 'running',
+          message: result.message ?? `提取到 ${result.results?.length ?? 0} 条`,
+        });
 
-  const parser = new DOMParser();
-  const searchDoc = parser.parseFromString(searchPage.html, 'text/html');
-  const directMagnets = parseMagnetResultsFromDocument(adapter, searchDoc, searchPage.url, searchPage.title);
-  const resultLinks = parseResultLinks(adapter, searchDoc, searchPage.url);
+        allRawResults.push(...(result.results ?? []));
 
-  if (directMagnets.length > 0 && resultLinks.length === 0) {
-    onProgress({ id: progressId, label: adapter.name, phase: 'browser', value: 1, status: 'done', message: `搜索页直接发现 ${directMagnets.length} 条磁力链接` });
-    return directMagnets.slice(0, maxResultsPerAdapter);
-  }
-
-  const collected = [...directMagnets];
-  const detailLinks = resultLinks.slice(0, maxDetailPagesPerAdapter);
-  for (let detailIndex = 0; detailIndex < detailLinks.length; detailIndex += 1) {
-    const link = detailLinks[detailIndex];
-    onProgress({
-      id: progressId,
-      label: adapter.name,
-      phase: 'browser',
-      value: 0.35 + (detailIndex / Math.max(1, detailLinks.length)) * 0.55,
-      status: 'running',
-      message: `抓取详情页 ${detailIndex + 1}/${detailLinks.length}`,
-    });
-    const detailPage = await fetchPage(link.url);
-    if (!detailPage.ok || detailPage.cloudflareDetected) continue;
-    const detailDoc = parser.parseFromString(detailPage.html, 'text/html');
-    const magnets = parseMagnetResultsFromDocument(adapter, detailDoc, detailPage.url, link.title);
-    collected.push(...magnets);
-  }
-
-  const unique = Array.from(new Map(collected.map((item) => [item.magnetUri, item])).values()).slice(0, maxResultsPerAdapter);
-  onProgress({ id: progressId, label: adapter.name, phase: 'browser', value: 1, status: 'done', message: `抓取到 ${unique.length} 条磁力链接` });
-  return unique;
-}
-
-async function withConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  let cursor = 0;
-  async function run(): Promise<void> {
-    while (cursor < items.length) {
-      const current = cursor;
-      cursor += 1;
-      results[current] = await worker(items[current], current);
+        onProgress({
+          id: `panel-${panelId}`,
+          label: adapter.name,
+          phase: 'browser',
+          value: 1,
+          status: 'done',
+          message: `搜索完成`,
+        });
+      } catch {
+        onProgress({
+          id: `panel-${panelId}`,
+          label: adapter.name,
+          phase: 'browser',
+          value: 1,
+          status: 'error',
+          message: '搜索失败',
+        });
+      }
     }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-  return results;
+  });
+
+  await Promise.all(workers);
+
+  const validResults = allRawResults.filter((r) => r.magnetUri && r.magnetUri.startsWith('magnet:'));
+  const deduped = dedupeByInfoHash(validResults.map((r) => ({ ...r, magnet: r.magnetUri })));
+
+  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 1, status: 'done', message: `共提取 ${deduped.length} 条去重后磁力链接` });
+
+  return rankResults(keyword, deduped as any as RawMagnetResult[], settings, onProgress);
 }
 
-export async function rankRawResults(
+async function rankResults(
+  keyword: string,
   rawResults: RawMagnetResult[],
   settings: AppSettings,
   onProgress: ProgressCallback,
-): Promise<RankedResult[]> {
-  const metadataItems = await withConcurrency(rawResults, Math.min(6, Math.max(1, settings.concurrency * 2)), async (result) => {
-    const id = `metadata-${result.id}`;
-    onProgress({ id, label: result.title, phase: 'metadata', value: 0.2, status: 'running', message: '分析 magnet metadata（不下载文件）' });
-    const metadata = await analyzeMagnetMetadata(result, settings.metadataTimeoutMs);
-    onProgress({ id, label: result.title, phase: 'metadata', value: 1, status: metadata.status === 'complete' ? 'done' : 'error', message: metadata.status === 'complete' ? 'metadata 完成' : metadata.error ?? 'metadata 失败' });
-    return { result, metadata, ruleScore: scoreByRules(result, metadata) };
-  });
+): Promise<FinalResult[]> {
+  if (rawResults.length === 0) return [];
 
-  const candidates = metadataItems.filter((item) => item.ruleScore.accepted);
-  onProgress({ id: 'ai-score', label: 'AI评分', phase: 'ai', value: 0.3, status: 'running', message: `规则预筛保留 ${candidates.length}/${metadataItems.length} 条` });
-  const ranked = await scoreWithAi(candidates, {
+  onProgress({ id: 'system-metadata', label: 'Metadata', phase: 'system', value: 0, status: 'running', message: '正在获取 metadata（不下载文件内容）' });
+
+  const magnets = rawResults.map((r) => r.magnetUri);
+  const metadataResults = await analyzeMany(magnets, settings.torrentConcurrency ?? 4, settings.metadataTimeoutMs);
+
+  onProgress({ id: 'system-metadata', label: 'Metadata', phase: 'system', value: 1, status: 'done', message: `metadata 获取完成` });
+
+  onProgress({ id: 'system-rules', label: '规则预筛', phase: 'system', value: 0, status: 'running', message: '正在规则预筛' });
+
+  const scoredCandidates: Array<{
+    id: string;
+    title: string;
+    magnet: string;
+    infoHash: string;
+    files: typeof metadataResults[0]['files'];
+    totalSize: number;
+    ruleScore: number;
+    ruleReasons: string[];
+    rawResult: RawMagnetResult;
+    metadata: TorrentMetadata;
+  }> = [];
+
+  for (let i = 0; i < rawResults.length; i++) {
+    const raw = rawResults[i];
+    const meta = metadataResults[i];
+    if (!meta) continue;
+
+    const ih = extractInfoHash(raw.magnetUri) ?? '';
+    const ruleScoreResult = scoreByRules(raw.title, meta, keyword);
+
+    if (ruleScoreResult.hardReject) continue;
+
+    scoredCandidates.push({
+      id: raw.id,
+      title: raw.title,
+      magnet: raw.magnetUri,
+      infoHash: ih,
+      files: meta.files,
+      totalSize: meta.totalBytes,
+      ruleScore: ruleScoreResult.score,
+      ruleReasons: ruleScoreResult.reasons,
+      rawResult: raw,
+      metadata: meta,
+    });
+  }
+
+  onProgress({ id: 'system-rules', label: '规则预筛', phase: 'system', value: 1, status: 'done', message: `规则预筛保留 ${scoredCandidates.length} 条` });
+
+  onProgress({ id: 'system-ai', label: 'AI评分', phase: 'system', value: 0, status: 'running', message: '正在 AI 评分' });
+
+  const aiScores = await scoreWithAi(scoredCandidates, {
     endpoint: settings.aiEndpoint,
     model: settings.aiModel,
     threshold: settings.confidenceThreshold,
   });
-  onProgress({ id: 'ai-score', label: 'AI评分', phase: 'ai', value: 1, status: 'done', message: `AI 排序后展示 ${ranked.length} 条` });
-  return ranked;
+
+  onProgress({ id: 'system-ai', label: 'AI评分', phase: 'system', value: 1, status: 'done', message: `AI 评分完成` });
+
+  const finalResults: FinalResult[] = [];
+
+  for (const candidate of scoredCandidates) {
+    const aiResult = aiScores.find((s) => s.id === candidate.id);
+    const finalScore = aiResult?.finalScore ?? candidate.ruleScore;
+
+    if (finalScore < settings.confidenceThreshold) continue;
+
+    finalResults.push({
+      id: candidate.id,
+      title: candidate.title,
+      magnet: candidate.magnet,
+      finalScore,
+      ruleScore: candidate.ruleScore,
+      aiScore: aiResult?.aiScore ?? candidate.ruleScore,
+      infoHash: candidate.infoHash,
+      files: candidate.files,
+      totalSize: candidate.totalSize,
+      reasons: aiResult?.aiScoreDetail?.reasons ?? candidate.ruleReasons,
+    });
+  }
+
+  finalResults.sort((a, b) => b.finalScore - a.finalScore);
+
+  return finalResults;
 }
 
 export async function executeSearch(
   query: string,
-  adapters: SiteAdapter[],
+  adapters: Adapter[],
   settings: AppSettings,
-  fetchPage: PageFetcher,
   onProgress: ProgressCallback,
-): Promise<RankedResult[]> {
-  const activeAdapters = adapters.slice(0, Math.max(1, Math.min(4, settings.concurrency)));
-  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 0, status: 'running', message: `启动 ${activeAdapters.length} 个资源站任务` });
-
-  const rawGroups = await withConcurrency(activeAdapters, settings.concurrency, (adapter, index) => runAdapterSearch(adapter, query, index, fetchPage, onProgress));
-  const rawResults = rawGroups.flat();
-  onProgress({ id: 'system-search', label: '搜索', phase: 'system', value: 1, status: 'done', message: `共抓取 ${rawResults.length} 条磁力链接` });
-  return rankRawResults(rawResults, settings, onProgress);
+): Promise<FinalResult[]> {
+  return searchWithBrowser(query, adapters, settings, onProgress);
 }

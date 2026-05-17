@@ -1,49 +1,61 @@
-import { applyGuideCapture, guideMessages, nextGuideStep } from './core/adapterGuide.js';
-import { executeSearch, rankRawResults } from './core/search.js';
-import { defaultSettings, loadAdapters, loadHistory, loadSettings, pushHistory, saveAdapters, saveSettings } from './core/storage.js';
-import type { AppSettings, FetchedPage, GuideStep, HistoryEntry, PageFetcher, ProgressItem, RankedResult, RawMagnetResult, SiteAdapter } from './core/types.js';
+import { applyGuideCapture, guideMessages, guideToasts, nextGuideStep } from './core/adapterGuide.js';
+import { executeSearch } from './core/search.js';
+import { defaultSettings, loadAdapters, loadHistory, loadSearchHistory, loadSettings, pushHistory, pushSearchHistory, saveAdapters, saveSettings } from './core/storage.js';
+import type { Adapter, AdapterCaptureStep, AppSettings, FinalResult, HistoryEntry, ProgressItem, SearchHistoryEntry } from './core/types.js';
 
 interface State {
   query: string;
   settings: AppSettings;
-  adapters: SiteAdapter[];
+  adapters: Adapter[];
   history: HistoryEntry[];
-  results: RankedResult[];
+  searchHistory: SearchHistoryEntry[];
+  results: FinalResult[];
   progress: Record<string, ProgressItem>;
   running: boolean;
-  guideStep: GuideStep;
-  draftAdapter?: SiteAdapter;
-  previewHtml?: string;
+  guideStep: AdapterCaptureStep;
+  draftAdapter?: Adapter;
   previewUrl?: string;
+  toastMessage: string;
+  hasVerificationPending: boolean;
+  verificationPanelIds: number[];
+  needsContinue: Record<number, boolean>;
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
+function nowTs(): number {
+  return Date.now();
 }
 
-function seedAdapter(): SiteAdapter {
-  const now = nowIso();
+function seedAdapter(): Adapter {
+  const now = nowTs();
   return {
     id: 'demo-public-domain',
     name: 'Demo Public Domain',
     homeUrl: 'https://example.org',
-    searchUrlTemplate: 'https://example.org/search?q={query}',
+    searchMode: 'browser',
     searchInputSelector: 'input[name="q"]',
     searchButtonSelector: 'button[type="submit"]',
     resultItemSelector: '.result-item',
     magnetLinkSelector: 'a[href^="magnet:"]',
+    waitAfterSearchMs: 2000,
+    waitAfterDetailMs: 1500,
     createdAt: now,
     updatedAt: now,
   };
 }
 
-function newAdapter(name: string, homeUrl: string, searchUrlTemplate?: string): SiteAdapter {
-  const now = nowIso();
+function newAdapter(name: string, homeUrl: string): Adapter {
+  const now = nowTs();
   return {
     id: crypto.randomUUID(),
     name,
     homeUrl,
-    searchUrlTemplate,
+    searchMode: 'browser',
+    searchInputSelector: '',
+    searchButtonSelector: '',
+    resultItemSelector: '',
+    magnetLinkSelector: '',
+    waitAfterSearchMs: 2000,
+    waitAfterDetailMs: 1500,
     createdAt: now,
     updatedAt: now,
   };
@@ -55,60 +67,23 @@ const state: State = {
   settings: { ...defaultSettings, ...loadSettings() },
   adapters: storedAdapters.length > 0 ? storedAdapters : [seedAdapter()],
   history: loadHistory(),
+  searchHistory: loadSearchHistory(),
   results: [],
   progress: {},
   running: false,
   guideStep: 'idle',
+  toastMessage: '',
+  hasVerificationPending: false,
+  verificationPanelIds: [],
+  needsContinue: {},
 };
 
 const rootElement = document.getElementById('root');
 if (!rootElement) throw new Error('Missing root element');
-const root = rootElement;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char);
 }
-
-
-function injectCaptureScript(html: string): string {
-  const script = `<script>
-(() => {
-  function cssEscape(value) { return value.replace(/[^a-zA-Z0-9_-]/g, ch => '\\\\' + ch); }
-  function selectorFrom(el) {
-    if (el.id) return '#' + cssEscape(el.id);
-    const parts = [];
-    let node = el;
-    while (node && node.nodeType === 1 && parts.length < 6) {
-      let part = node.tagName.toLowerCase();
-      if (node.classList && node.classList.length) part += Array.from(node.classList).slice(0, 2).map(c => '.' + cssEscape(c)).join('');
-      const siblings = node.parentElement ? Array.from(node.parentElement.children).filter(child => child.tagName === node.tagName) : [];
-      if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
-      parts.unshift(part);
-      node = node.parentElement;
-    }
-    return parts.join(' > ');
-  }
-  document.addEventListener('click', event => {
-    event.preventDefault();
-    event.stopPropagation();
-    parent.postMessage({ type: 'adapter-selector', selector: selectorFrom(event.target), text: (event.target.textContent || '').trim().slice(0, 120) }, '*');
-  }, true);
-})();
-</script>`;
-  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<\/body>/i, `${script}</body>`) || `${html}${script}`;
-}
-
-async function apiFetchPage(url: string): Promise<FetchedPage> {
-  try {
-    const response = await fetch(`/api/fetch?url=${encodeURIComponent(url)}`);
-    if (response.ok) return await response.json() as FetchedPage;
-    return { url, status: response.status, ok: false, title: '', html: '', cloudflareDetected: false, error: `本地抓取服务返回 HTTP ${response.status}` };
-  } catch (error) {
-    return { url, status: 0, ok: false, title: '', html: '', cloudflareDetected: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-const pageFetcher: PageFetcher = apiFetchPage;
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '未知';
@@ -119,12 +94,24 @@ function formatBytes(bytes: number): string {
 
 function upsertProgress(item: ProgressItem): void {
   state.progress[item.id] = item;
+  if (item.status === 'waiting' && item.message.includes('验证')) {
+    state.hasVerificationPending = true;
+  }
   render();
 }
 
 function persist(): void {
   saveAdapters(state.adapters);
   saveSettings(state.settings);
+}
+
+function showToast(message: string): void {
+  state.toastMessage = message;
+  render();
+  setTimeout(() => {
+    state.toastMessage = '';
+    render();
+  }, 2000);
 }
 
 function renderSidebar(): string {
@@ -135,87 +122,150 @@ function renderSidebar(): string {
         <div><h1>Bit Resource Finder</h1><p>本地 metadata + 规则 + LLaMACpp 评分</p></div>
       </div>
       <label class="field"><span>搜索关键字</span><input id="query" value="${escapeHtml(state.query)}" placeholder="例如：开源纪录片 1080p" /></label>
-      <label class="field"><span>并发浏览器窗格：${state.settings.concurrency}</span><input id="concurrency" type="range" min="1" max="4" value="${state.settings.concurrency}" /></label>
+      <label class="field"><span>并发数：${state.settings.concurrency}</span><input id="concurrency" type="range" min="1" max="4" value="${state.settings.concurrency}" /></label>
       <button class="primary" id="search" ${state.running || !state.query.trim() || state.adapters.length === 0 ? 'disabled' : ''}>${state.running ? '搜索中…' : '▶ 开始搜索'}</button>
       <button class="secondary" id="add-adapter">＋ 添加资源站</button>
+      ${state.guideStep !== 'idle' && state.guideStep !== 'done' ? `<button class="secondary" id="cancel-adapter">取消录制</button>` : ''}
       <section class="panel"><h2>资源站 adapters</h2>${state.adapters.length === 0 ? '<p class="muted">暂无资源站，请先添加。</p>' : ''}${state.adapters.map((adapter) => `<div class="adapter-chip"><strong>${escapeHtml(adapter.name)}</strong><span>${escapeHtml(adapter.homeUrl)}</span></div>`).join('')}</section>
-      <section class="panel"><h2>最近 5 次搜索</h2>${state.history.length === 0 ? '<p class="muted">暂无历史记录。</p>' : ''}${state.history.map((entry) => `<button class="history-item" data-history="${entry.id}"><strong>${escapeHtml(entry.query)}</strong><span>${new Date(entry.createdAt).toLocaleString()} · ${entry.results.length} 条</span></button>`).join('')}</section>
-      <section class="panel compact"><h2>AI 设置</h2><label class="field small"><span>LLaMACpp endpoint</span><input id="ai-endpoint" value="${escapeHtml(state.settings.aiEndpoint)}" /></label><label class="field small"><span>展示阈值：${state.settings.confidenceThreshold}</span><input id="threshold" type="range" min="0.1" max="0.95" step="0.05" value="${state.settings.confidenceThreshold}" /></label></section>
+      <section class="panel"><h2>最近 5 次搜索</h2>${state.searchHistory.length === 0 ? '<p class="muted">暂无历史记录。</p>' : ''}${state.searchHistory.map((entry) => `<button class="history-item" data-history="${entry.id}"><strong>${escapeHtml(entry.keyword)}</strong><span>${new Date(entry.createdAt).toLocaleString()} · ${entry.results.length} 条</span></button>`).join('')}</section>
+      <section class="panel compact"><h2>AI 设置</h2><label class="field small"><span>LLaMACpp endpoint</span><input id="ai-endpoint" value="${escapeHtml(state.settings.aiEndpoint)}" /></label><label class="field small"><span>展示阈值：${state.settings.confidenceThreshold}</span><input id="threshold" type="range" min="10" max="100" step="5" value="${state.settings.confidenceThreshold}" /></label><label class="field small"><span>Metadata 超时：${state.settings.metadataTimeoutMs}ms</span><input id="meta-timeout" type="number" min="5000" max="120000" step="5000" value="${state.settings.metadataTimeoutMs}" /></label></section>
     </aside>`;
 }
 
-function renderBrowserGrid(): string {
-  const panes = Array.from({ length: state.settings.concurrency }, (_, index) => state.adapters[index] ?? state.draftAdapter).filter(Boolean) as SiteAdapter[];
-  const visible = panes.length > 0 ? panes : Array.from({ length: state.settings.concurrency }, (_, index) => ({ id: `empty-${index}`, name: `浏览器 ${index + 1}`, homeUrl: 'about:blank', createdAt: nowIso(), updatedAt: nowIso() }));
-  const guide = state.guideStep !== 'idle' && state.guideStep !== 'done'
-    ? `<div class="guide-toast"><strong>半自动指引</strong><span>${guideMessages[state.guideStep]}</span><button id="manual-selector">手动填写 selector</button></div>`
-    : '';
-  return `<section class="browser-section"><div class="section-head"><h2>嵌入浏览器分屏</h2><p>使用本地抓取服务渲染页面；点击预览页元素可生成 adapter selector。</p></div>${guide}<div class="browser-grid panes-${state.settings.concurrency}">${visible.map((adapter, index) => {
-    const isDraft = state.draftAdapter?.id === adapter.id && state.previewHtml;
-    const frame = isDraft
-      ? `<iframe title="${escapeHtml(adapter.name)}" srcdoc="${escapeHtml(injectCaptureScript(state.previewHtml ?? ''))}" sandbox="allow-scripts allow-forms"></iframe>`
-      : adapter.homeUrl !== 'about:blank'
-        ? `<iframe title="${escapeHtml(adapter.name)}" src="${escapeHtml(adapter.homeUrl)}" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>`
-        : '<div class="blank-pane">等待加载资源站或 Cloudflare 人工验证</div>';
-    return `<div class="browser-pane"><div class="browser-toolbar"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span><strong>${escapeHtml(adapter.name)}</strong></div>${frame}</div>`;
-  }).join('')}</div></section>`;
+function renderPanels(): string {
+  const panels = Array.from({ length: state.settings.concurrency }, (_, index) => ({
+    index,
+    adapter: state.adapters[index],
+    progress: Object.values(state.progress).find((p) => p.id === `panel-${index}`),
+  }));
+
+  return `<section class="browser-section">
+    <div class="section-head"><h2>浏览器任务面板</h2><p>每个面板对应一个资源站，遇到验证页会提示人工完成。</p></div>
+    ${state.guideStep !== 'idle' && state.guideStep !== 'done' ? `<div class="guide-toast"><strong>录制指引</strong><span>${guideMessages[state.guideStep]}</span><button id="manual-selector">手动填写 selector</button></div>` : ''}
+    <div class="panel-grid panes-${state.settings.concurrency}">
+      ${panels.map((panel) => {
+        const prog = panel.progress;
+        const isVerification = prog?.status === 'waiting' && prog?.message?.includes('验证');
+        const panelId = panel.index;
+        return `<div class="panel-card ${isVerification ? 'verification' : prog?.status ?? 'idle'}">
+          <div class="panel-toolbar">
+            <span class="status-dot ${prog?.status === 'running' ? 'running' : prog?.status === 'done' ? 'done' : prog?.status === 'error' ? 'error' : prog?.status === 'waiting' ? 'waiting' : 'idle'}"></span>
+            <strong>${escapeHtml(panel.adapter?.name ?? `面板 ${panelId + 1}`)}</strong>
+            ${prog ? `<span class="badge badge-${prog.status}">${prog.message}</span>` : '<span class="badge badge-idle">空闲</span>'}
+          </div>
+          <div class="panel-body">
+            ${isVerification ? `<div class="verification-alert">
+              <p>检测到验证页面</p>
+              <button class="continue-btn" data-panel="${panelId}">我已完成验证，继续</button>
+            </div>` : `<p class="muted">${prog?.message ?? '等待任务…'}</p>`}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </section>`;
 }
 
 function renderProgress(): string {
   const items = Object.values(state.progress);
-  return `<section class="progress-panel"><div class="section-head"><h2>进度</h2><p>浏览器搜索、metadata 分析、AI 评分独立显示。</p></div>${items.length === 0 ? '<p class="muted">尚未开始任务。</p>' : ''}${items.map((item) => `<div class="progress-row ${item.status}"><div><strong>${escapeHtml(item.label)}</strong><span>${item.phase} · ${escapeHtml(item.message)}</span></div><progress value="${item.value}" max="1"></progress></div>`).join('')}</section>`;
+  const systemItems = items.filter((i) => i.id.startsWith('system-'));
+  const total = Math.max(1, systemItems.length);
+  const done = systemItems.filter((i) => i.status === 'done').length;
+  const currentStage = systemItems.find((i) => i.status === 'running');
+
+  return `<section class="progress-panel">
+    <div class="section-head"><h2>进度</h2></div>
+    <div class="progress-bar-container">
+      <div class="progress-bar" style="width:${Math.round((done / total) * 100)}%"></div>
+    </div>
+    <p class="progress-text">${currentStage?.message ?? (state.running ? '准备中…' : state.results.length > 0 ? '完成' : '尚未开始任务')}</p>
+    ${items.filter((i) => !i.id.startsWith('system-')).length > 0 ? items.filter((i) => !i.id.startsWith('system-')).map((item) => `<div class="progress-row ${item.status}"><div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.message)}</span></div></div>`).join('') : ''}
+  </section>`;
 }
 
 function renderResults(): string {
-  return `<section class="results-panel"><div class="section-head"><h2>结果列表</h2><p>按 AI 置信度排序；点击标题展开文件列表和评分理由。</p></div>${state.results.length === 0 ? '<p class="muted">暂无可展示结果。</p>' : ''}<div class="result-list">${state.results.map((result, index) => `<details class="result-card" ${index === 0 ? 'open' : ''}><summary><span class="rank">#${index + 1}</span><strong>${escapeHtml(result.title)}</strong><em>${Math.round(result.aiScore.confidence * 100)}%</em></summary><div class="result-body"><label>磁力链接</label><code>${escapeHtml(result.magnetUri)}</code><div class="score-grid"><span>来源：${escapeHtml(result.sourceName)}</span><span>规则评分：${result.ruleScore.score}</span><span>AI 结论：${result.aiScore.verdict}</span><span>总大小：${formatBytes(result.metadata.totalBytes)}</span></div><h4>文件列表</h4><ul>${result.metadata.files.map((file) => `<li>${escapeHtml(file.path)} <span>${formatBytes(file.bytes)}</span></li>`).join('')}</ul><h4>评分理由</h4><ul>${result.aiScore.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('')}</ul></div></details>`).join('')}</div></section>`;
+  return `<section class="results-panel">
+    <div class="section-head"><h2>结果列表</h2><p>按最终评分排序；点击展开查看详情。</p></div>
+    ${state.results.length === 0 ? '<p class="muted">暂无可展示结果。</p>' : ''}
+    <div class="result-list">
+      ${state.results.map((result, index) => `<details class="result-card" ${index === 0 ? 'open' : ''}>
+        <summary>
+          <span class="rank">#${index + 1}</span>
+          <strong>${escapeHtml(result.title)}</strong>
+          <div class="score-badges">
+            <span class="final-score">${result.finalScore}分</span>
+            <span class="rule-score">规则${result.ruleScore}</span>
+            <span class="ai-score">AI${result.aiScore}</span>
+          </div>
+        </summary>
+        <div class="result-body">
+          <label>磁力链接</label>
+          <code>${escapeHtml(result.magnet)}</code>
+          <div class="score-grid">
+            <span>最终评分：${result.finalScore}</span>
+            <span>规则评分：${result.ruleScore}</span>
+            <span>AI 评分：${result.aiScore}</span>
+            <span>总大小：${formatBytes(result.totalSize)}</span>
+          </div>
+          ${result.files.length > 0 ? `<h4>文件列表</h4><ul>${result.files.map((file) => `<li>${escapeHtml(file.path)} <span>${formatBytes(file.bytes)}</span></li>`).join('')}</ul>` : ''}
+          ${result.reasons.length > 0 ? `<h4>评分理由</h4><ul>${result.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>` : ''}
+        </div>
+      </details>`).join('')}
+    </div>
+  </section>`;
 }
 
 function render(): void {
-  root.innerHTML = `<div class="app-shell">${renderSidebar()}<main>${renderBrowserGrid()}<div class="lower-grid">${renderProgress()}${renderResults()}</div></main></div>`;
+  const root = rootElement!;
+  root.innerHTML = `<div class="app-shell">
+    ${renderSidebar()}
+    <main>
+      ${renderPanels()}
+      <div class="lower-grid">
+        ${renderProgress()}
+        ${renderResults()}
+      </div>
+    </main>
+    ${state.toastMessage ? `<div class="toast">${escapeHtml(state.toastMessage)}</div>` : ''}
+  </div>`;
   bindEvents();
 }
 
-
-
-async function tryBrowserRuntimeSearch(query: string): Promise<RankedResult[] | undefined> {
+async function startBrowserIfNeeded(): Promise<void> {
   try {
     const statusResponse = await fetch('/api/browser/status');
-    const status = await statusResponse.json() as { available?: boolean; error?: string };
-    if (!status.available) {
-      upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'waiting', message: status.error ?? 'Playwright 未安装，回退到 HTTP 抓取模式' });
-      return undefined;
+    const status = await statusResponse.json();
+    if (!status.started) {
+      await fetch('/api/browser/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapters: state.adapters }),
+      });
+    } else {
+      await fetch('/api/browser/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapters: state.adapters }),
+      });
     }
-    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 0.15, status: 'running', message: '使用 Playwright/Chromium 持久化上下文执行真实搜索' });
-    const response = await fetch('/api/browser/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, adapters: state.adapters, concurrency: state.settings.concurrency }),
-    });
-    const payload = await response.json() as { ok?: boolean; results?: RawMagnetResult[]; error?: string; unavailable?: boolean };
-    if (!payload.ok || payload.unavailable) {
-      upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: payload.error ?? '有头浏览器搜索失败，回退到 HTTP 抓取模式' });
-      return undefined;
-    }
-    const rawResults = payload.results ?? [];
-    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'done', message: `真实浏览器抓取到 ${rawResults.length} 条磁力链接` });
-    return rankRawResults(rawResults, state.settings, upsertProgress);
-  } catch (error) {
-    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: error instanceof Error ? error.message : String(error) });
-    return undefined;
+  } catch {
+    upsertProgress({ id: 'browser-runtime', label: '有头浏览器', phase: 'system', value: 1, status: 'error', message: '浏览器启动失败，请确保已安装 Playwright' });
   }
 }
 
 function captureSelector(selector: string): void {
   if (!state.draftAdapter) return;
   state.draftAdapter = applyGuideCapture(state.draftAdapter, state.guideStep, selector);
+  const toastMsg = guideToasts[state.guideStep];
   state.guideStep = nextGuideStep(state.guideStep);
-  upsertProgress({ id: 'adapter-guide', label: '添加资源站', phase: 'system', value: state.guideStep === 'done' ? 1 : 0.45, status: state.guideStep === 'done' ? 'done' : 'waiting', message: guideMessages[state.guideStep] });
+
   if (state.guideStep === 'done' && state.draftAdapter) {
     state.adapters = [state.draftAdapter, ...state.adapters.filter((item) => item.id !== state.draftAdapter?.id)];
+    showToast(guideToasts.done);
     state.draftAdapter = undefined;
-    state.previewHtml = undefined;
     state.previewUrl = undefined;
     persist();
+  } else {
+    showToast(toastMsg);
   }
   render();
 }
@@ -230,6 +280,8 @@ function bindEvents(): void {
   document.getElementById('concurrency')?.addEventListener('input', (event) => { state.settings.concurrency = Number((event.target as HTMLInputElement).value); persist(); render(); });
   document.getElementById('ai-endpoint')?.addEventListener('change', (event) => { state.settings.aiEndpoint = (event.target as HTMLInputElement).value; persist(); });
   document.getElementById('threshold')?.addEventListener('input', (event) => { state.settings.confidenceThreshold = Number((event.target as HTMLInputElement).value); persist(); render(); });
+  document.getElementById('meta-timeout')?.addEventListener('change', (event) => { state.settings.metadataTimeoutMs = Number((event.target as HTMLInputElement).value); persist(); });
+
   document.getElementById('add-adapter')?.addEventListener('click', async () => {
     const homeUrl = prompt('请输入资源站首页 URL（http/https）', 'https://example.org')?.trim();
     if (!homeUrl) return;
@@ -242,35 +294,105 @@ function bindEvents(): void {
       return;
     }
     const name = prompt('请输入资源站名称', parsedHome.host)?.trim() || parsedHome.host;
-    const template = prompt('如果站点支持搜索 URL，请填写模板（用 {query} 表示关键词）', `${homeUrl.replace(/\/$/, '')}/search?q={query}`)?.trim() || undefined;
-    state.draftAdapter = newAdapter(name, parsedHome.href, template);
-    state.guideStep = 'searchInput';
-    upsertProgress({ id: 'adapter-guide', label: '添加资源站', phase: 'system', value: 0.1, status: 'running', message: '通过本地服务加载资源站首页' });
-    const page = await apiFetchPage(homeUrl);
-    state.previewHtml = page.html;
-    state.previewUrl = page.url;
-    upsertProgress({ id: 'adapter-guide', label: '添加资源站', phase: 'system', value: 0.2, status: page.ok ? 'waiting' : 'error', message: page.ok ? guideMessages.searchInput : page.error ?? `HTTP ${page.status}` });
+    state.draftAdapter = newAdapter(name, parsedHome.href);
+    state.guideStep = 'pick_search_input';
+    state.previewUrl = parsedHome.href;
+    showToast(guideMessages.pick_search_input);
     render();
   });
+
+  document.getElementById('cancel-adapter')?.addEventListener('click', () => {
+    state.guideStep = 'idle';
+    state.draftAdapter = undefined;
+    state.previewUrl = undefined;
+    render();
+  });
+
   document.getElementById('manual-selector')?.addEventListener('click', () => {
-    const selector = prompt(`请输入 ${state.guideStep} 的 CSS selector`)?.trim();
+    const stepLabels: Record<string, string> = {
+      pick_search_input: '搜索输入框',
+      pick_search_button: '搜索按钮',
+      pick_result_item: '搜索结果项',
+      pick_magnet_link: '磁力链接',
+    };
+    const label = stepLabels[state.guideStep] ?? state.guideStep;
+    const selector = prompt(`请输入 "${label}" 的 CSS selector`)?.trim();
     if (selector) captureSelector(selector);
   });
+
   document.getElementById('search')?.addEventListener('click', async () => {
     if (state.running || !state.query.trim()) return;
-    state.running = true; state.progress = {}; render();
+    state.running = true;
+    state.progress = {};
+    state.results = [];
+    state.hasVerificationPending = false;
+    state.verificationPanelIds = [];
+    state.needsContinue = {};
+    render();
+
+    await startBrowserIfNeeded();
+
     try {
-      state.results = (await tryBrowserRuntimeSearch(state.query.trim())) ?? await executeSearch(state.query.trim(), state.adapters, state.settings, pageFetcher, upsertProgress);
-      const entry: HistoryEntry = { id: crypto.randomUUID(), query: state.query.trim(), createdAt: nowIso(), results: state.results };
-      state.history = pushHistory(entry);
+      const results = await executeSearch(state.query.trim(), state.adapters, state.settings, upsertProgress);
+      state.results = results;
+
+      const historyEntry: HistoryEntry = {
+        id: crypto.randomUUID(),
+        query: state.query.trim(),
+        keyword: state.query.trim(),
+        createdAt: new Date().toISOString(),
+        results: [],
+      };
+      state.history = pushHistory(historyEntry);
+      state.searchHistory = pushSearchHistory(state.query.trim(), results);
     } finally {
-      state.running = false; render();
+      state.running = false;
+      render();
     }
   });
+
   document.querySelectorAll<HTMLButtonElement>('[data-history]').forEach((button) => button.addEventListener('click', () => {
-    const entry = state.history.find((item) => item.id === button.dataset.history);
+    const entry = state.searchHistory.find((item) => item.id === button.dataset.history);
     if (!entry) return;
-    state.query = entry.query; state.results = entry.results; render();
+    state.query = entry.keyword;
+    state.results = entry.results;
+    render();
+  }));
+
+  document.querySelectorAll<HTMLButtonElement>('.continue-btn').forEach((button) => button.addEventListener('click', async () => {
+    const panelId = Number(button.dataset.panel);
+    if (Number.isNaN(panelId)) return;
+
+    try {
+      const response = await fetch('/api/browser/continue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ panelId }),
+      });
+      const result = await response.json();
+
+      if (result.needVerification) {
+        showToast('仍检测到验证页面，请继续完成验证');
+        return;
+      }
+
+      if (!result.ok) {
+        showToast('继续执行失败');
+        return;
+      }
+
+      showToast('验证完成，正在继续搜索');
+      upsertProgress({
+        id: `panel-${panelId}`,
+        label: `面板 ${panelId + 1}`,
+        phase: 'browser',
+        value: 0.8,
+        status: 'running',
+        message: `继续搜索中`,
+      });
+    } catch {
+      showToast('继续执行失败');
+    }
   }));
 }
 

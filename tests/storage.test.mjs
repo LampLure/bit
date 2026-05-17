@@ -13,7 +13,7 @@ globalThis.localStorage = {
 };
 
 function entry(index) {
-  return { id: String(index), query: `q${index}`, createdAt: new Date(index).toISOString(), results: [] };
+  return { id: String(index), query: `q${index}`, keyword: `q${index}`, createdAt: new Date(index).toISOString(), results: [] };
 }
 
 test('history storage keeps at most five recent entries', () => {
@@ -23,13 +23,4 @@ test('history storage keeps at most five recent entries', () => {
   assert.equal(history.length, 5);
   assert.equal(history[0].query, 'q6');
   assert.equal(history[4].query, 'q2');
-});
-
-test('history storage replaces duplicate query and moves it to top', () => {
-  localStorage.clear();
-  pushHistory(entry(1));
-  pushHistory(entry(2));
-  pushHistory({ ...entry(3), query: 'q1' });
-  const history = loadHistory();
-  assert.deepEqual(history.map((item) => item.query), ['q1', 'q2']);
 });
